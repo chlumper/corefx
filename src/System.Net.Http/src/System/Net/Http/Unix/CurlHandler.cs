@@ -129,7 +129,7 @@ namespace System.Net.Http
 
         private static readonly DiagnosticListener s_diagnosticListener = new DiagnosticListener(HttpHandlerLoggingStrings.DiagnosticListenerName);
 
-        private readonly MultiAgent _agent;
+        private readonly MultiAgent[] _agents;
         private volatile bool _anyOperationStarted;
         private volatile bool _disposed;
 
@@ -154,7 +154,7 @@ namespace System.Net.Http
         private SslProtocols _sslProtocols = SslProtocols.None; // use default
         private IDictionary<String, Object> _properties; // Only create dictionary when required.
 
-        private object LockObject { get { return _agent; } }
+        private object LockObject => _agents;
 
         #endregion        
 
@@ -175,7 +175,15 @@ namespace System.Net.Http
 
         public CurlHandler()
         {
-            _agent = new MultiAgent(this);
+            // Requests associated with a libcurl multi handle must have all of their processing
+            // serialized, which can create a bottleneck when there are many requests.  As such,
+            // we create one or more agents across which to distribute the load.  Based on experiments,
+            // creating a number equal to half the number of cores appears to strike a good balance.
+            _agents = new MultiAgent[Math.Max(1, Environment.ProcessorCount / 2)];
+            for (int i = 0; i < _agents.Length; i++)
+            {
+                _agents[i] = new MultiAgent(this);
+            }
         }
 
         #region Properties
@@ -414,7 +422,10 @@ namespace System.Net.Http
             _disposed = true;
             if (disposing)
             {
-                _agent.Dispose();
+                foreach (MultiAgent agent in _agents)
+                {
+                    agent.Dispose();
+                }
             }
             base.Dispose(disposing);
         }
@@ -467,8 +478,9 @@ namespace System.Net.Http
             var easy = new EasyRequest(this, request, cancellationToken);
             try
             {
-                EventSourceTrace("{0}", request, easy: easy, agent: _agent);
-                _agent.Queue(new MultiAgent.IncomingRequest { Easy = easy, Type = MultiAgent.IncomingRequestType.New });
+                MultiAgent agent = GetAgentForNextRequest();
+                EventSourceTrace("{0}", request, easy: easy, agent: agent);
+                agent.Queue(new MultiAgent.IncomingRequest(MultiAgent.IncomingRequestType.New, easy));
             }
             catch (Exception exc)
             {
@@ -481,6 +493,34 @@ namespace System.Net.Http
         }
 
         #region Private methods
+
+        private MultiAgent GetAgentForNextRequest()
+        {
+            Debug.Assert(_agents != null && _agents.Length >= 1);
+            MultiAgent[] agents = _agents;
+
+            // Assume we're targeting the first agent.
+            MultiAgent target = agents[0];
+            int minActiveCount = target.AppxRequestCount;
+
+            // Loop through the rest of the agents looking for one that has
+            // a smaller active request count, and target it instead.  We do
+            // this to try to keep the number of requests balanced across all
+            // agents, while also only using a single agent for serialized access.
+            for (int i = 1; i < agents.Length; i++)
+            {
+                MultiAgent agent = agents[i];
+                int c = agent.AppxRequestCount;
+                if (c < minActiveCount)
+                {
+                    target = agent;
+                    minActiveCount = c;
+                }
+            }
+
+            // Return the target agent.
+            return target;
+        }
 
         private void SetOperationStarted()
         {

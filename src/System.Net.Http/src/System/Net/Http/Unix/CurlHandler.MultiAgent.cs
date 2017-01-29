@@ -46,7 +46,7 @@ namespace System.Net.Http
             /// active requests, or unpausing active requests.
             /// Protected by a lock on <see cref="_incomingRequests"/>.
             /// </summary>
-            private readonly Queue<IncomingRequest> _incomingRequests = new Queue<IncomingRequest>();
+            private readonly IncomingRequestQueue _incomingRequests = new IncomingRequestQueue();
 
             /// <summary>Map of activeOperations, indexed by a GCHandle to a StrongToWeakReference{EasyRequest}.</summary>
             private readonly Dictionary<IntPtr, ActiveRequest> _activeOperations = new Dictionary<IntPtr, ActiveRequest>();
@@ -91,7 +91,7 @@ namespace System.Net.Http
             public void Dispose()
             {
                 EventSourceTrace(null);
-                QueueIfRunning(new IncomingRequest { Type = IncomingRequestType.Shutdown });
+                QueueIfRunning(new IncomingRequest(IncomingRequestType.Shutdown));
                 _multiHandle?.Dispose();
             }
 
@@ -105,6 +105,15 @@ namespace System.Net.Http
                     EnsureWorkerIsRunning();
                 }
             }
+
+            /// <summary>
+            /// Gets an approximate count on the number of requests either incoming or currently
+            /// being handled. It's approximate because it's not synchronized; we could, for example,
+            /// be in the process of removing a request from the incoming queue and activating it, such
+            /// that it's not yet counted as an active operation, and it may not show up in this count,
+            /// or it may show up twice due to the lack of barriers.
+            /// </summary>
+            public int AppxRequestCount => _activeOperations.Count + _incomingRequests.NewRequestCount;
 
             /// <summary>Queues a request for the multi handle to process, but only if there's already an active worker running.</summary>
             public void QueueIfRunning(IncomingRequest request)
@@ -215,14 +224,14 @@ namespace System.Net.Http
             internal void RequestUnpause(EasyRequest easy)
             {
                 EventSourceTrace(null, easy: easy);
-                QueueIfRunning(new IncomingRequest { Easy = easy, Type = IncomingRequestType.Unpause });
+                QueueIfRunning(new IncomingRequest(IncomingRequestType.Unpause, easy));
             }
 
             /// <summary>Requests that the request associated with the easy operation be canceled.</summary>
             internal void RequestCancel(EasyRequest easy)
             {
                 EventSourceTrace(null, easy: easy);
-                QueueIfRunning(new IncomingRequest { Easy = easy, Type = IncomingRequestType.Cancel });
+                QueueIfRunning(new IncomingRequest(IncomingRequestType.Cancel, easy));
             }
 
             /// <summary>Creates and configures a new multi handle.</summary>
@@ -260,7 +269,7 @@ namespace System.Net.Http
 
                 return multiHandle;
             }
-
+            
             /// <summary>Thread work item entrypoint for a multiagent worker.</summary>
             private void WorkerBody()
             {
@@ -322,9 +331,10 @@ namespace System.Net.Http
                     {
                         if (_runningWorker == null)
                         {
-                            while (_incomingRequests.Count > 0)
+                            IncomingRequest request;
+                            while (_incomingRequests.TryDequeue(out request))
                             {
-                                _incomingRequests.Dequeue().Easy.CleanupAndFailRequest(exc);
+                                request.Easy.CleanupAndFailRequest(exc);
                             }
                         }
                     }
@@ -432,12 +442,10 @@ namespace System.Net.Http
                     IncomingRequest request;
                     lock (_incomingRequests)
                     {
-                        if (_incomingRequests.Count == 0)
+                        if (!_incomingRequests.TryDequeue(out request))
                         {
                             return;
                         }
-
-                        request = _incomingRequests.Dequeue();
                     }
 
                     // Process the request
@@ -1362,8 +1370,14 @@ namespace System.Net.Http
             /// <summary>Represents an incoming request to be processed by the agent.</summary>
             internal struct IncomingRequest
             {
-                public IncomingRequestType Type;
-                public EasyRequest Easy;
+                public readonly IncomingRequestType Type;
+                public readonly EasyRequest Easy;
+
+                public IncomingRequest(IncomingRequestType type, EasyRequest easy = null)
+                {
+                    Type = type;
+                    Easy = easy;
+                }
             }
 
             /// <summary>The type of an incoming request to be processed by the agent.</summary>
@@ -1377,6 +1391,94 @@ namespace System.Net.Http
                 Unpause,
                 /// <summary>A request to shutdown the agent and all active operations.  No easy request is associated with this type.</summary>
                 Shutdown
+            }
+
+            /// <summary>Queue used to store <see cref="IncomingRequest"/>s and track how many of them are for "new" requests.</summary>
+            private sealed class IncomingRequestQueue
+            {
+                private IncomingRequest[] _array = Array.Empty<IncomingRequest>();
+                private int _head; // First valid element in the queue
+                private int _tail; // First open slot in the dequeue, unless the dequeue is full
+                private int _count; // Number of requests
+                private int _newRequestCount; // Number of "New" incoming requests
+
+                public int Count => _count;
+                public int NewRequestCount => _newRequestCount;
+
+                public void Enqueue(IncomingRequest item)
+                {
+                    if (_count == _array.Length)
+                    {
+                        Grow();
+                    }
+
+                    _array[_tail] = item;
+                    if (++_tail == _array.Length)
+                    {
+                        _tail = 0;
+                    }
+
+                    _count++;
+                    if (item.Type == IncomingRequestType.New)
+                    {
+                        _newRequestCount++;
+                    }
+                }
+
+                public bool TryDequeue(out IncomingRequest request)
+                {
+                    if (_count == 0)
+                    {
+                        request = default(IncomingRequest);
+                        return false;
+                    }
+
+                    request = _array[_head];
+                    _array[_head] = default(IncomingRequest);
+
+                    if (++_head == _array.Length)
+                    {
+                        _head = 0;
+                    }
+
+                    _count--;
+                    if (request.Type == IncomingRequestType.New)
+                    {
+                        _newRequestCount--;
+                    }
+
+                    return true;
+                }
+
+                private void Grow()
+                {
+                    Debug.Assert(_count == _array.Length);
+                    Debug.Assert(_head == _tail);
+
+                    const int MinimumGrow = 4;
+
+                    int capacity = (int)(_array.Length * 2L);
+                    if (capacity < _array.Length + MinimumGrow)
+                    {
+                        capacity = _array.Length + MinimumGrow;
+                    }
+
+                    var newArray = new IncomingRequest[capacity];
+
+                    if (_head == 0)
+                    {
+                        Array.Copy(_array, 0, newArray, 0, _count);
+                    }
+                    else
+                    {
+                        Array.Copy(_array, _head, newArray, 0, _array.Length - _head);
+                        Array.Copy(_array, 0, newArray, _array.Length - _head, _tail);
+                    }
+
+                    _array = newArray;
+                    _head = 0;
+                    _tail = _count;
+                }
             }
         }
 
