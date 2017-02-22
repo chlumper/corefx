@@ -6,6 +6,8 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using Microsoft.Diagnostics.Runtime;
+using Microsoft.Diagnostics.Runtime.Utilities.Pdb;
 using Xunit;
 
 namespace System.Diagnostics
@@ -173,8 +175,12 @@ namespace System.Diagnostics
                     // needing to do this in every derived test and keep each test much simpler.
                     try
                     {
-                        Assert.True(Process.WaitForExit(Options.TimeOut),
-                            $"Timed out after {Options.TimeOut}ms waiting for remote process {Process.Id}");
+                        if (!Process.WaitForExit(Options.TimeOut))
+                        {
+                            string desc = ClrMdHelper.GetProcessDescription(Process.Id);
+                            Assert.True(false,
+                                $"Timed out after {Options.TimeOut}ms waiting for remote process {Process.Id}:{Environment.NewLine}{desc}");
+                        }
 
                         if (Options.CheckExitCode)
                         {
@@ -190,6 +196,50 @@ namespace System.Diagnostics
                         Process.Dispose();
                         Process = null;
                     }
+                }
+            }
+
+            internal static class ClrMdHelper
+            {
+                private static readonly ConcurrentDictionary<PdbInfo, PdbReader> s_pdbReaders = new ConcurrentDictionary<PdbInfo, PdbReader>();
+
+                public static string GetProcessDescription(int pid)
+                {
+                    try
+                    {
+                        using (DataTarget dt = DataTarget.AttachToProcess(pid, 5000))
+                        {
+                            ClrInfo info = dt.ClrVersions.SingleOrDefault();
+                            if (info == null)
+                            {
+                                return $"(Unable to get runtime information for target process {pid})";
+                            }
+
+                            // Get the associated runtime
+                            ClrRuntime runtime = info.CreateRuntime(Path.Combine(Path.GetDirectoryName(info.ModuleInfo.FileName), "mscordaccore.dll"));
+
+                            // Build up a description of useful state
+                            StringBuilder sb = new StringBuilder();
+                            sb.AppendLine($"------------------ PROCESS ID {pid} ------------------");
+                            const string Indent = "    ";
+
+                            // Add thread stacks from the process
+                            foreach (ClrThread thread in runtime.Threads)
+                            {
+                                sb.AppendLine($"{Indent}---------- Thread {thread.OSThreadId:x}: ---------- ");
+                                foreach (ClrStackFrame frame in thread.StackTrace)
+                                {
+                                    sb.AppendLine($"{Indent} {frame.DisplayString}");
+                                }
+                                sb.AppendLine();
+                            }
+
+                            // Return description
+                            sb.AppendLine($"-------------------- END ID {pid} --------------------");
+                            return sb.ToString();
+                        }
+                    }
+                    catch (Exception e) { return $"Error attempting to get process {pid} description: {e}"; }
                 }
             }
         }
