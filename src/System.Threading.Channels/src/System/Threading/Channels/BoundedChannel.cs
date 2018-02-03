@@ -49,7 +49,7 @@ namespace System.Threading.Channels
             Writer = new BoundedChannelWriter(this);
         }
 
-        [DebuggerDisplay("Items={ItemsCountForDebugger}")]
+        [DebuggerDisplay("Items={ItemsCountForDebugger}, Waiting={WaitingReadersForDebugger}")]
         [DebuggerTypeProxy(typeof(DebugEnumeratorDebugView<>))]
         private sealed class BoundedChannelReader : ChannelReader<T>, IDebugEnumerable<T>
         {
@@ -77,11 +77,11 @@ namespace System.Threading.Channels
                 return false;
             }
 
-            public override Task<bool> WaitToReadAsync(CancellationToken cancellationToken)
+            public override ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken)
             {
                 if (cancellationToken.IsCancellationRequested)
                 {
-                    return Task.FromCanceled<bool>(cancellationToken);
+                    return new ValueTask<bool>(Task.FromCanceled<bool>(cancellationToken));
                 }
 
                 BoundedChannel<T> parent = _parent;
@@ -92,20 +92,20 @@ namespace System.Threading.Channels
                     // If there are any items available, a read is possible.
                     if (!parent._items.IsEmpty)
                     {
-                        return ChannelUtilities.s_trueTask;
+                        return new ValueTask<bool>(true);
                     }
 
                     // There were no items available, so if we're done writing, a read will never be possible.
                     if (parent._doneWriting != null)
                     {
                         return parent._doneWriting != ChannelUtilities.s_doneWritingSentinel ?
-                            Task.FromException<bool>(parent._doneWriting) :
-                            ChannelUtilities.s_falseTask;
+                            new ValueTask<bool>(Task.FromException<bool>(parent._doneWriting)) :
+                            new ValueTask<bool>(false);
                     }
 
                     // There were no items available, but there could be in the future, so ensure
                     // there's a blocked reader task and return it.
-                    return ChannelUtilities.GetOrCreateWaiter(ref parent._waitingReaders, parent._runContinuationsAsynchronously, cancellationToken);
+                    return ChannelUtilities.CreateAndQueueWaiter(ref parent._waitingReaders, parent._runContinuationsAsynchronously, cancellationToken);
                 }
             }
 
@@ -163,11 +163,14 @@ namespace System.Threading.Channels
             /// <summary>Gets the number of items in the channel. This should only be used by the debugger.</summary>
             private int ItemsCountForDebugger => _parent._items.Count;
 
+            /// <summary>Gets the number of waiters waiting to read from the channel.</summary>
+            private int WaitingReadersForDebugger => ChannelUtilities.CountWaiters(_parent._waitingReaders);
+
             /// <summary>Gets an enumerator the debugger can use to show the contents of the channel.</summary>
             IEnumerator<T> IDebugEnumerable<T>.GetEnumerator() => _parent._items.GetEnumerator();
         }
 
-        [DebuggerDisplay("Items={ItemsCountForDebugger}, Capacity={CapacityForDebugger}")]
+        [DebuggerDisplay("Items={ItemsCountForDebugger}, Capacity={CapacityForDebugger}, Waiting={WaitingWritersForDebugger}")]
         [DebuggerTypeProxy(typeof(DebugEnumeratorDebugView<>))]
         private sealed class BoundedChannelWriter : ChannelWriter<T>, IDebugEnumerable<T>
         {
@@ -284,15 +287,15 @@ namespace System.Threading.Channels
                 // any waiting readers that there may be something for them to consume.
                 // Since we're no longer holding the lock, it's possible we'll end up
                 // waking readers that have since come in.
-                waitingReaders.Success(item: true);
+                ChannelUtilities.WakeUpWaiters(ref waitingReaders, true);
                 return true;
             }
 
-            public override Task<bool> WaitToWriteAsync(CancellationToken cancellationToken)
+            public override ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken)
             {
                 if (cancellationToken.IsCancellationRequested)
                 {
-                    return Task.FromCanceled<bool>(cancellationToken);
+                    return new ValueTask<bool>(Task.FromCanceled<bool>(cancellationToken));
                 }
 
                 BoundedChannel<T> parent = _parent;
@@ -304,8 +307,8 @@ namespace System.Threading.Channels
                     if (parent._doneWriting != null)
                     {
                         return parent._doneWriting != ChannelUtilities.s_doneWritingSentinel ?
-                            Task.FromException<bool>(parent._doneWriting) :
-                            ChannelUtilities.s_falseTask;
+                            new ValueTask<bool>(Task.FromException<bool>(parent._doneWriting)) :
+                            new ValueTask<bool>(false);
                     }
 
                     // If there's space to write, a write is possible.
@@ -313,19 +316,19 @@ namespace System.Threading.Channels
                     // full we'll just drop an element to make room.
                     if (parent._items.Count < parent._bufferedCapacity || parent._mode != BoundedChannelFullMode.Wait)
                     {
-                        return ChannelUtilities.s_trueTask;
+                        return new ValueTask<bool>(true);
                     }
 
                     // We're still allowed to write, but there's no space, so ensure a waiter is queued and return it.
-                    return ChannelUtilities.GetOrCreateWaiter(ref parent._waitingWriters, runContinuationsAsynchronously: true, cancellationToken);
+                    return ChannelUtilities.CreateAndQueueWaiter(ref parent._waitingWriters, runContinuationsAsynchronously: true, cancellationToken);
                 }
             }
 
-            public override Task WriteAsync(T item, CancellationToken cancellationToken)
+            public override ValueTask WriteAsync(T item, CancellationToken cancellationToken)
             {
                 if (cancellationToken.IsCancellationRequested)
                 {
-                    return Task.FromCanceled(cancellationToken);
+                    return new ValueTask(Task.FromCanceled(cancellationToken));
                 }
 
                 ReaderInteractor<bool> waitingReaders = null;
@@ -338,7 +341,7 @@ namespace System.Threading.Channels
                     // If we're done writing, trying to write is an error.
                     if (parent._doneWriting != null)
                     {
-                        return Task.FromException(ChannelUtilities.CreateInvalidCompletionException(parent._doneWriting));
+                        return new ValueTask(Task.FromException(ChannelUtilities.CreateInvalidCompletionException(parent._doneWriting)));
                     }
 
                     // Get the number of items in the channel currently.
@@ -353,7 +356,7 @@ namespace System.Threading.Channels
                         if (waitingReaders == null)
                         {
                             // If no one's waiting to be notified about a 0-to-1 transition, we're done.
-                            return ChannelUtilities.s_trueTask;
+                            return default;
                         }
                         parent._waitingReaders = null;
                     }
@@ -363,7 +366,7 @@ namespace System.Threading.Channels
                         // since there's room, we can simply store the item and exit without having to
                         // worry about blocked/waiting readers.
                         parent._items.EnqueueTail(item);
-                        return ChannelUtilities.s_trueTask;
+                        return default;
                     }
                     else if (parent._mode == BoundedChannelFullMode.Wait)
                     {
@@ -371,13 +374,13 @@ namespace System.Threading.Channels
                         // Queue the writer.
                         var writer = WriterInteractor<T>.Create(runContinuationsAsynchronously: true, item, cancellationToken);
                         parent._blockedWriters.EnqueueTail(writer);
-                        return writer.Task;
+                        return new ValueTask(writer);
                     }
                     else if (parent._mode == BoundedChannelFullMode.DropWrite)
                     {
                         // The channel is full and we're in ignore mode.
                         // Ignore the item but say we accepted it.
-                        return ChannelUtilities.s_trueTask;
+                        return default;
                     }
                     else
                     {
@@ -387,7 +390,7 @@ namespace System.Threading.Channels
                             parent._items.DequeueTail() :
                             parent._items.DequeueHead();
                         parent._items.EnqueueTail(item);
-                        return ChannelUtilities.s_trueTask;
+                        return default;
                     }
                 }
 
@@ -395,8 +398,8 @@ namespace System.Threading.Channels
                 // any waiting readers that there may be something for them to consume.
                 // Since we're no longer holding the lock, it's possible we'll end up
                 // waking readers that have since come in.
-                waitingReaders.Success(item: true);
-                return ChannelUtilities.s_trueTask;
+                ChannelUtilities.WakeUpWaiters(ref waitingReaders, true);
+                return default;
             }
 
             /// <summary>Gets the number of items in the channel. This should only be used by the debugger.</summary>
@@ -404,6 +407,9 @@ namespace System.Threading.Channels
 
             /// <summary>Gets the capacity of the channel. This should only be used by the debugger.</summary>
             private int CapacityForDebugger => _parent._bufferedCapacity;
+
+            /// <summary>Gets the number of waiters waiting to read from the channel.</summary>
+            private int WaitingWritersForDebugger => ChannelUtilities.CountWaiters(_parent._waitingWriters);
 
             /// <summary>Gets an enumerator the debugger can use to show the contents of the channel.</summary>
             IEnumerator<T> IDebugEnumerable<T>.GetEnumerator() => _parent._items.GetEnumerator();

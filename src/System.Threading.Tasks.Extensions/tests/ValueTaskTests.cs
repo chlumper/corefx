@@ -11,6 +11,13 @@ namespace System.Threading.Tasks.Tests
 {
     public class ValueTaskTests
     {
+        public enum CtorMode
+        {
+            Result,
+            Task,
+            TaskObject
+        }
+
         [Fact]
         public void DefaultValueTask_ValueType_DefaultValue()
         {
@@ -27,10 +34,16 @@ namespace System.Threading.Tasks.Tests
             Assert.Equal(null, default(ValueTask<string>).Result);
         }
 
-        [Fact]
-        public void CreateFromValue_IsRanToCompletion()
+        [Theory]
+        [InlineData(CtorMode.Result)]
+        [InlineData(CtorMode.Task)]
+        [InlineData(CtorMode.TaskObject)]
+        public void CreateFromSuccessfullyCompleted_IsCompletedSuccessfully(CtorMode mode)
         {
-            ValueTask<int> t = new ValueTask<int>(42);
+            ValueTask<int> t =
+                mode == CtorMode.Result ? new ValueTask<int>(42) :
+                mode == CtorMode.Task ? new ValueTask<int>(Task.FromResult(42)) :
+                new ValueTask<int>(CreateCompletedTaskObject(42, null));
             Assert.True(t.IsCompleted);
             Assert.True(t.IsCompletedSuccessfully);
             Assert.False(t.IsFaulted);
@@ -38,29 +51,43 @@ namespace System.Threading.Tasks.Tests
             Assert.Equal(42, t.Result);
         }
 
-        [Fact]
-        public void CreateFromCompletedTask_IsRanToCompletion()
+        [Theory]
+        [InlineData(CtorMode.Task)]
+        [InlineData(CtorMode.TaskObject)]
+        public void CreateFromNotCompleted_ThenCompleteSuccessfully(CtorMode mode)
         {
-            ValueTask<int> t = new ValueTask<int>(Task.FromResult(42));
-            Assert.True(t.IsCompleted);
-            Assert.True(t.IsCompletedSuccessfully);
-            Assert.False(t.IsFaulted);
-            Assert.False(t.IsCanceled);
-            Assert.Equal(42, t.Result);
-        }
+            object completer = null;
+            ValueTask<int> t = default;
+            switch (mode)
+            {
+                case CtorMode.Task:
+                    var tcs = new TaskCompletionSource<int>();
+                    t = new ValueTask<int>(tcs.Task);
+                    completer = tcs;
+                    break;
 
-        [Fact]
-        public void CreateFromNotCompletedTask_IsNotRanToCompletion()
-        {
-            var tcs = new TaskCompletionSource<int>();
-            ValueTask<int> t = new ValueTask<int>(tcs.Task);
+                case CtorMode.TaskObject:
+                    var mre = new ManualResetValueTaskObject<int>();
+                    t = new ValueTask<int>(mre);
+                    completer = mre;
+                    break;
+            }
 
             Assert.False(t.IsCompleted);
             Assert.False(t.IsCompletedSuccessfully);
             Assert.False(t.IsFaulted);
             Assert.False(t.IsCanceled);
 
-            tcs.SetResult(42);
+            switch (mode)
+            {
+                case CtorMode.Task:
+                    ((TaskCompletionSource<int>)completer).SetResult(42);
+                    break;
+
+                case CtorMode.TaskObject:
+                    ((ManualResetValueTaskObject<int>)completer).SetResult(42);
+                    break;
+            }
 
             Assert.Equal(42, t.Result);
             Assert.True(t.IsCompleted);
@@ -69,11 +96,80 @@ namespace System.Threading.Tasks.Tests
             Assert.False(t.IsCanceled);
         }
 
+        [Theory]
+        [InlineData(CtorMode.Task)]
+        [InlineData(CtorMode.TaskObject)]
+        public void CreateFromNotCompleted_ThenFault(CtorMode mode)
+        {
+            object completer = null;
+            ValueTask<int> t = default;
+            switch (mode)
+            {
+                case CtorMode.Task:
+                    var tcs = new TaskCompletionSource<int>();
+                    t = new ValueTask<int>(tcs.Task);
+                    completer = tcs;
+                    break;
+
+                case CtorMode.TaskObject:
+                    var mre = new ManualResetValueTaskObject<int>();
+                    t = new ValueTask<int>(mre);
+                    completer = mre;
+                    break;
+            }
+
+            Assert.False(t.IsCompleted);
+            Assert.False(t.IsCompletedSuccessfully);
+            Assert.False(t.IsFaulted);
+            Assert.False(t.IsCanceled);
+
+            Exception e = new InvalidOperationException();
+
+            switch (mode)
+            {
+                case CtorMode.Task:
+                    ((TaskCompletionSource<int>)completer).SetException(e);
+                    break;
+
+                case CtorMode.TaskObject:
+                    ((ManualResetValueTaskObject<int>)completer).SetException(e);
+                    break;
+            }
+
+            Assert.True(t.IsCompleted);
+            Assert.False(t.IsCompletedSuccessfully);
+            Assert.True(t.IsFaulted);
+            Assert.False(t.IsCanceled);
+
+            Assert.Same(e, Assert.Throws<InvalidOperationException>(() => t.Result));
+            Assert.Same(e, Assert.Throws<InvalidOperationException>(() => t.GetAwaiter().GetResult()));
+        }
+
+        [Theory]
+        [InlineData(CtorMode.Task)]
+        [InlineData(CtorMode.TaskObject)]
+        public void CreateFromFaulted_IsFaulted(CtorMode mode)
+        {
+            InvalidOperationException e = new InvalidOperationException();
+            ValueTask<int> t = mode == CtorMode.Task ? new ValueTask<int>(Task.FromException<int>(e)) : new ValueTask<int>(CreateCompletedTaskObject<int>(0, e));
+
+            Assert.True(t.IsCompleted);
+            Assert.False(t.IsCompletedSuccessfully);
+            Assert.True(t.IsFaulted);
+            Assert.False(t.IsCanceled);
+
+            Assert.Same(e, Assert.Throws<InvalidOperationException>(() => t.Result));
+            Assert.Same(e, Assert.Throws<InvalidOperationException>(() => t.GetAwaiter().GetResult()));
+        }
+
         [Fact]
         public void CreateFromNullTask_Throws()
         {
-            Assert.Throws<ArgumentNullException>(() => new ValueTask<int>((Task<int>)null));
-            Assert.Throws<ArgumentNullException>(() => new ValueTask<string>((Task<string>)null));
+            AssertExtensions.Throws<ArgumentNullException>("task", () => new ValueTask<int>((Task<int>)null));
+            AssertExtensions.Throws<ArgumentNullException>("task", () => new ValueTask<string>((Task<string>)null));
+
+            AssertExtensions.Throws<ArgumentNullException>("task", () => new ValueTask<int>((IValueTaskObject<int>)null));
+            AssertExtensions.Throws<ArgumentNullException>("task", () => new ValueTask<string>((IValueTaskObject<string>)null));
         }
 
         [Fact]
@@ -94,68 +190,107 @@ namespace System.Threading.Tasks.Tests
         }
 
         [Fact]
-        public async Task CreateFromValue_Await()
+        public void CreateFromTaskObject_AsTaskNotIdempotent()
         {
-            ValueTask<int> t = new ValueTask<int>(42);
+            ValueTask<int> t = new ValueTask<int>(CreateCompletedTaskObject<int>(42, null));
+            Assert.NotSame(Task.FromResult(42), t.AsTask());
+            Assert.NotSame(t.AsTask(), t.AsTask());
+        }
+
+        [Theory]
+        [InlineData(CtorMode.Result)]
+        [InlineData(CtorMode.Task)]
+        [InlineData(CtorMode.TaskObject)]
+        public async Task CreateFromCompleted_Await(CtorMode mode)
+        {
+            ValueTask<int> t =
+                mode == CtorMode.Result ? new ValueTask<int>(42) :
+                mode == CtorMode.Task ? new ValueTask<int>(Task.FromResult(42)) :
+                new ValueTask<int>(CreateCompletedTaskObject(42, null));
             Assert.Equal(42, await t);
             Assert.Equal(42, await t.ConfigureAwait(false));
             Assert.Equal(42, await t.ConfigureAwait(true));
         }
 
-        [Fact]
-        public async Task CreateFromTask_Await_Normal()
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(2)]
+        public async Task CreateFromTask_Await_Normal(int mode)
         {
             Task<int> source = Task.Delay(1).ContinueWith(_ => 42);
-            ValueTask<int> t = new ValueTask<int>(source);
-            Assert.Equal(42, await t);
+            var t = new ValueTask<int>(source);
+            int actual =
+                mode == 0 ? await t :
+                mode == 1 ? await t.ConfigureAwait(false) :
+                await t.ConfigureAwait(true);
+            Assert.Equal(42, actual);
         }
 
-        [Fact]
-        public async Task CreateFromTask_Await_ConfigureAwaitFalse()
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(2)]
+        public async Task CreateFromTaskObject_Await_Normal(int mode)
         {
-            Task<int> source = Task.Delay(1).ContinueWith(_ => 42);
-            ValueTask<int> t = new ValueTask<int>(source);
-            Assert.Equal(42, await t.ConfigureAwait(false));
+            var mre = new ManualResetValueTaskObject<int>();
+            ValueTask<int> t = new ValueTask<int>(mre);
+            var ignored = Task.Delay(1).ContinueWith(_ => mre.SetResult(42));
+            int actual =
+                mode == 0 ? await t :
+                mode == 1 ? await t.ConfigureAwait(false) :
+                await t.ConfigureAwait(true);
+            Assert.Equal(42, actual);
         }
 
-        [Fact]
-        public async Task CreateFromTask_Await_ConfigureAwaitTrue()
-        {
-            Task<int> source = Task.Delay(1).ContinueWith(_ => 42);
-            ValueTask<int> t = new ValueTask<int>(source);
-            Assert.Equal(42, await t.ConfigureAwait(true));
-        }
-
-        [Fact]
-        public async Task Awaiter_OnCompleted()
+        [Theory]
+        [InlineData(CtorMode.Result)]
+        [InlineData(CtorMode.Task)]
+        [InlineData(CtorMode.TaskObject)]
+        public async Task Awaiter_OnCompleted(CtorMode mode)
         {
             // Since ValueTask implements both OnCompleted and UnsafeOnCompleted,
             // OnCompleted typically won't be used by await, so we add an explicit test
             // for it here.
 
-            ValueTask<int> t = new ValueTask<int>(42);
+            ValueTask<int> t =
+                mode == CtorMode.Result ? new ValueTask<int>(42) :
+                mode == CtorMode.Task ? new ValueTask<int>(Task.FromResult(42)) :
+                new ValueTask<int>(CreateCompletedTaskObject(42, null));
+
             var tcs = new TaskCompletionSource<bool>();
             t.GetAwaiter().OnCompleted(() => tcs.SetResult(true));
             await tcs.Task;
         }
 
         [Theory]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task ConfiguredAwaiter_OnCompleted(bool continueOnCapturedContext)
+        [InlineData(CtorMode.Result, true)]
+        [InlineData(CtorMode.Task, true)]
+        [InlineData(CtorMode.TaskObject, true)]
+        [InlineData(CtorMode.Result, false)]
+        [InlineData(CtorMode.Task, false)]
+        [InlineData(CtorMode.TaskObject, false)]
+        public async Task ConfiguredAwaiter_OnCompleted(CtorMode mode, bool continueOnCapturedContext)
         {
             // Since ValueTask implements both OnCompleted and UnsafeOnCompleted,
             // OnCompleted typically won't be used by await, so we add an explicit test
             // for it here.
 
-            ValueTask<int> t = new ValueTask<int>(42);
+            ValueTask<int> t =
+                mode == CtorMode.Result ? new ValueTask<int>(42) :
+                mode == CtorMode.Task ? new ValueTask<int>(Task.FromResult(42)) :
+                new ValueTask<int>(CreateCompletedTaskObject(42, null));
+
             var tcs = new TaskCompletionSource<bool>();
             t.ConfigureAwait(continueOnCapturedContext).GetAwaiter().OnCompleted(() => tcs.SetResult(true));
             await tcs.Task;
         }
 
-        [Fact]
-        public async Task Awaiter_ContinuesOnCapturedContext()
+        [Theory]
+        [InlineData(CtorMode.Result)]
+        [InlineData(CtorMode.Task)]
+        [InlineData(CtorMode.TaskObject)]
+        public async Task Awaiter_ContinuesOnCapturedContext(CtorMode mode)
         {
             await Task.Run(() =>
             {
@@ -163,7 +298,11 @@ namespace System.Threading.Tasks.Tests
                 SynchronizationContext.SetSynchronizationContext(tsc);
                 try
                 {
-                    ValueTask<int> t = new ValueTask<int>(42);
+                    ValueTask<int> t =
+                        mode == CtorMode.Result ? new ValueTask<int>(42) :
+                        mode == CtorMode.Task ? new ValueTask<int>(Task.FromResult(42)) :
+                        new ValueTask<int>(CreateCompletedTaskObject(42, null));
+
                     var mres = new ManualResetEventSlim();
                     t.GetAwaiter().OnCompleted(() => mres.Set());
                     Assert.True(mres.Wait(10000));
@@ -177,9 +316,13 @@ namespace System.Threading.Tasks.Tests
         }
 
         [Theory]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task ConfiguredAwaiter_ContinuesOnCapturedContext(bool continueOnCapturedContext)
+        [InlineData(CtorMode.Result, true)]
+        [InlineData(CtorMode.Task, true)]
+        [InlineData(CtorMode.TaskObject, true)]
+        [InlineData(CtorMode.Result, false)]
+        [InlineData(CtorMode.Task, false)]
+        [InlineData(CtorMode.TaskObject, false)]
+        public async Task ConfiguredAwaiter_ContinuesOnCapturedContext(CtorMode mode, bool continueOnCapturedContext)
         {
             await Task.Run(() =>
             {
@@ -187,7 +330,11 @@ namespace System.Threading.Tasks.Tests
                 SynchronizationContext.SetSynchronizationContext(tsc);
                 try
                 {
-                    ValueTask<int> t = new ValueTask<int>(42);
+                    ValueTask<int> t =
+                        mode == CtorMode.Result ? new ValueTask<int>(42) :
+                        mode == CtorMode.Task ? new ValueTask<int>(Task.FromResult(42)) :
+                        new ValueTask<int>(CreateCompletedTaskObject(42, null));
+
                     var mres = new ManualResetEventSlim();
                     t.ConfigureAwait(continueOnCapturedContext).GetAwaiter().OnCompleted(() => mres.Set());
                     Assert.True(mres.Wait(10000));
@@ -201,24 +348,40 @@ namespace System.Threading.Tasks.Tests
         }
 
         [Fact]
-        public void GetHashCode_ContainsResult()
+        public void GetHashCode_FromResult_ContainsResult()
         {
             ValueTask<int> t = new ValueTask<int>(42);
             Assert.Equal(t.Result.GetHashCode(), t.GetHashCode());
         }
 
         [Fact]
-        public void GetHashCode_ContainsTask()
-        {
-            ValueTask<string> t = new ValueTask<string>(Task.FromResult("42"));
-            Assert.Equal(t.AsTask().GetHashCode(), t.GetHashCode());
-        }
-
-        [Fact]
-        public void GetHashCode_ContainsNull()
+        public void GetHashCode_FromResult_ContainsNull()
         {
             ValueTask<string> t = new ValueTask<string>((string)null);
             Assert.Equal(0, t.GetHashCode());
+        }
+
+        [Theory]
+        [InlineData(CtorMode.Task)]
+        [InlineData(CtorMode.TaskObject)]
+        public void GetHashCode_FromObject_MatchesObjectHashCode(CtorMode mode)
+        {
+            object obj;
+            ValueTask<int> vt;
+            if (mode == CtorMode.Task)
+            {
+                Task<int> t = Task.FromResult(42);
+                vt = new ValueTask<int>(t);
+                obj = t;
+            }
+            else
+            {
+                ManualResetValueTaskObject<int> t = CreateCompletedTaskObject(42, null);
+                vt = new ValueTask<int>(t);
+                obj = t;
+            }
+
+            Assert.Equal(obj.GetHashCode(), vt.GetHashCode());
         }
 
         [Fact]
@@ -235,6 +398,7 @@ namespace System.Threading.Tasks.Tests
 
             Assert.False(new ValueTask<int>(42) == new ValueTask<int>(Task.FromResult(42)));
             Assert.False(new ValueTask<int>(Task.FromResult(42)) == new ValueTask<int>(42));
+            Assert.False(new ValueTask<int>(CreateCompletedTaskObject(42, null)) == new ValueTask<int>(42));
         }
 
         [Fact]
@@ -251,6 +415,7 @@ namespace System.Threading.Tasks.Tests
 
             Assert.True(new ValueTask<int>(42) != new ValueTask<int>(Task.FromResult(42)));
             Assert.True(new ValueTask<int>(Task.FromResult(42)) != new ValueTask<int>(42));
+            Assert.True(new ValueTask<int>(CreateCompletedTaskObject(42, null)) != new ValueTask<int>(42));
         }
 
         [Fact]
@@ -267,6 +432,7 @@ namespace System.Threading.Tasks.Tests
 
             Assert.False(new ValueTask<int>(42).Equals(new ValueTask<int>(Task.FromResult(42))));
             Assert.False(new ValueTask<int>(Task.FromResult(42)).Equals(new ValueTask<int>(42)));
+            Assert.False(new ValueTask<int>(CreateCompletedTaskObject(42, null)).Equals(new ValueTask<int>(42)));
         }
 
         [Fact]
@@ -283,6 +449,7 @@ namespace System.Threading.Tasks.Tests
 
             Assert.False(new ValueTask<int>(42).Equals((object)new ValueTask<int>(Task.FromResult(42))));
             Assert.False(new ValueTask<int>(Task.FromResult(42)).Equals((object)new ValueTask<int>(42)));
+            Assert.False(new ValueTask<int>(CreateCompletedTaskObject(42, null)).Equals((object)new ValueTask<int>(42)));
 
             Assert.False(new ValueTask<int>(42).Equals((object)null));
             Assert.False(new ValueTask<int>(42).Equals(new object()));
@@ -294,15 +461,19 @@ namespace System.Threading.Tasks.Tests
         {
             Assert.Equal("Hello", new ValueTask<string>("Hello").ToString());
             Assert.Equal("Hello", new ValueTask<string>(Task.FromResult("Hello")).ToString());
+            Assert.Equal("Hello", new ValueTask<string>(CreateCompletedTaskObject("Hello", null)).ToString());
 
             Assert.Equal("42", new ValueTask<int>(42).ToString());
             Assert.Equal("42", new ValueTask<int>(Task.FromResult(42)).ToString());
+            Assert.Equal("42", new ValueTask<int>(CreateCompletedTaskObject(42, null)).ToString());
 
             Assert.Same(string.Empty, new ValueTask<string>(string.Empty).ToString());
             Assert.Same(string.Empty, new ValueTask<string>(Task.FromResult(string.Empty)).ToString());
+            Assert.Same(string.Empty, new ValueTask<string>(CreateCompletedTaskObject(string.Empty, null)).ToString());
 
             Assert.Same(string.Empty, new ValueTask<string>(Task.FromException<string>(new InvalidOperationException())).ToString());
             Assert.Same(string.Empty, new ValueTask<string>(Task.FromException<string>(new OperationCanceledException())).ToString());
+            Assert.Same(string.Empty, new ValueTask<string>(CreateCompletedTaskObject<string>(null, new InvalidOperationException())).ToString());
 
             Assert.Same(string.Empty, new ValueTask<string>(Task.FromCanceled<string>(new CancellationToken(true))).ToString());
 
@@ -310,6 +481,7 @@ namespace System.Threading.Tasks.Tests
             Assert.Same(string.Empty, default(ValueTask<string>).ToString());
             Assert.Same(string.Empty, new ValueTask<string>((string)null).ToString());
             Assert.Same(string.Empty, new ValueTask<string>(Task.FromResult<string>(null)).ToString());
+            Assert.Same(string.Empty, new ValueTask<string>(CreateCompletedTaskObject<string>(null, null)).ToString());
 
             Assert.Same(string.Empty, new ValueTask<DateTime>(new TaskCompletionSource<DateTime>().Task).ToString());
         }
@@ -326,6 +498,20 @@ namespace System.Threading.Tasks.Tests
 
             AsyncMethodBuilderAttribute amba = valueTaskType.GetTypeInfo().GetCustomAttribute<AsyncMethodBuilderAttribute>();
             Assert.Equal(builderTypeCtorArg, amba.BuilderType);
+        }
+
+        private static ManualResetValueTaskObject<T> CreateCompletedTaskObject<T>(T result, Exception error)
+        {
+            var mre = new ManualResetValueTaskObject<T>();
+            if (error != null)
+            {
+                mre.SetException(error);
+            }
+            else
+            {
+                mre.SetResult(result);
+            }
+            return mre;
         }
 
         private sealed class TrackingSynchronizationContext : SynchronizationContext
