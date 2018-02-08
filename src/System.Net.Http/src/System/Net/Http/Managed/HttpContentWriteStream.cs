@@ -3,7 +3,6 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Diagnostics;
-using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -19,9 +18,7 @@ namespace System.Net.Http
 
         /// <summary>Cancellation token associated with the send operation.</summary>
         /// <remarks>
-        /// Because of how this write stream is used, the CancellationToken passed into the individual
-        /// stream operations will be the default non-cancelable token and can be ignored.  Instead,
-        /// this token is used.
+        /// 
         /// </remarks>
         internal CancellationToken RequestCancellationToken { get; }
 

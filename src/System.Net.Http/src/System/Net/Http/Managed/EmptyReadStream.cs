@@ -26,7 +26,7 @@ namespace System.Net.Http
                 return s_zeroTask;
             }
 
-            public override ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken cancellationToken = default) =>
+            public override ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken cancellationToken) =>
                 new ValueTask<int>(0);
         }
     }

@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Test.Common;
@@ -9,37 +10,47 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Xunit;
-using Xunit.Abstractions;
 
 namespace System.Net.Http.Functional.Tests
 {
-    public class CancellationTest : HttpClientTestBase
+    public class HttpClientHandler_CancellationTest : HttpClientTestBase
     {
-        private readonly ITestOutputHelper _output;
-
-        public CancellationTest(ITestOutputHelper output)
+        public enum CancellationMode
         {
-            _output = output;
+            Token,
+            CancelAllPending
+        }
+
+        public enum CancellationTiming
+        {
+            DuringRequestContentSend,
+            DuringResponseHeadersReceive,
+            DuringResponseBodyReceive
+        }
+
+        public static IEnumerable<object[]> CancellationCombinations()
+        {
+            foreach (CancellationMode mode in Enum.GetValues(typeof(CancellationMode)))
+            {
+                foreach (CancellationTiming timing in Enum.GetValues(typeof(CancellationTiming)))
+                {
+                    yield return new object[] { mode, timing };
+                }
+            }
         }
 
         [OuterLoop] // includes seconds of delay
         [Theory]
-        [InlineData(false, false)]
-        [InlineData(false, true)]
-        [InlineData(true, false)]
-        [InlineData(true, true)]
+        [MemberData(nameof(CancellationCombinations))]
         [ActiveIssue("dotnet/corefx #20010", TargetFrameworkMonikers.Uap)]
         [ActiveIssue("dotnet/corefx #19038", TargetFrameworkMonikers.NetFramework)]
-        public async Task GetAsync_ResponseContentRead_CancelUsingTimeoutOrToken_TaskCanceledQuickly(
-            bool useTimeout, bool startResponseBody)
+        public async Task PostAsync_CancelDuringOperation_TaskCanceledQuickly(CancellationMode mode, CancellationTiming timing)
         {
-            var cts = new CancellationTokenSource(); // ignored if useTimeout==true
-            TimeSpan timeout = useTimeout ? new TimeSpan(0, 0, 1) : Timeout.InfiniteTimeSpan;
-            CancellationToken cancellationToken = useTimeout ? CancellationToken.None : cts.Token;
-
             using (HttpClient client = CreateHttpClient())
             {
-                client.Timeout = timeout;
+                client.Timeout = Timeout.InfiniteTimeSpan;
+                var cts = new CancellationTokenSource();
+                CancellationToken cancellationToken = mode == CancellationMode.Token ? cts.Token : CancellationToken.None;
 
                 var triggerResponseWrite = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 var triggerRequestCancel = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -59,34 +70,29 @@ namespace System.Net.Http.Functional.Tests
                         await Task.Delay(1000);
                         triggerRequestCancel.SetResult(true); // allow request to cancel
                         await triggerResponseWrite.Task; // pause until we're released
-                        
+
                         return null;
                     });
 
                     var stopwatch = Stopwatch.StartNew();
+                    Task t = new Func<Task>(async () =>
+                    {
+                        Task<HttpResponseMessage> getResponse = client.GetAsync(url, HttpCompletionOption.ResponseContentRead, cancellationToken);
+                        await triggerRequestCancel.Task;
+                        cts.Cancel();
+                        await getResponse;
+                    })();
                     if (PlatformDetection.IsFullFramework)
                     {
+
                         // .NET Framework throws WebException instead of OperationCanceledException.
-                        await Assert.ThrowsAnyAsync<WebException>(async () =>
-                        {
-                            Task<HttpResponseMessage> getResponse = client.GetAsync(url, HttpCompletionOption.ResponseContentRead, cancellationToken);
-                            await triggerRequestCancel.Task;
-                            cts.Cancel();
-                            await getResponse;
-                        });
+                        await Assert.ThrowsAnyAsync<WebException>(() => t);
                     }
                     else
                     {
-                        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-                        {
-                            Task<HttpResponseMessage> getResponse = client.GetAsync(url, HttpCompletionOption.ResponseContentRead, cancellationToken);
-                            await triggerRequestCancel.Task;
-                            cts.Cancel();
-                            await getResponse;
-                        });
+                        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => t);
                     }
                     stopwatch.Stop();
-                    _output.WriteLine("GetAsync() completed at: {0}", stopwatch.Elapsed.ToString());
 
                     triggerResponseWrite.SetResult(true);
                     Assert.True(stopwatch.Elapsed < new TimeSpan(0, 0, 30), $"Elapsed time {stopwatch.Elapsed} should be less than 30 seconds, was {stopwatch.Elapsed.TotalSeconds}");
@@ -109,6 +115,11 @@ namespace System.Net.Http.Functional.Tests
         [InlineData(true)]
         public async Task ReadAsStreamAsync_ReadAsync_Cancel_TaskCanceledQuickly(bool startResponseBody)
         {
+            if (UseManagedHandler)
+            {
+                return;
+            }
+
             using (HttpClient client = CreateHttpClient())
             {
                 await LoopbackServer.CreateServerAsync(async (server, url) =>
@@ -152,7 +163,6 @@ namespace System.Net.Http.Functional.Tests
                         stopwatch.Stop();
 
                         triggerResponseWrite.SetResult(true);
-                        _output.WriteLine("ReadAsync() completed at: {0}", stopwatch.Elapsed.ToString());
                         Assert.True(stopwatch.Elapsed < new TimeSpan(0, 0, 30), $"Elapsed time {stopwatch.Elapsed} should be less than 30 seconds, was {stopwatch.Elapsed.TotalSeconds}");
                     }
                 });

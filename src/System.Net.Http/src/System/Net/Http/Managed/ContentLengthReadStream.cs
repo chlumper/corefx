@@ -15,8 +15,7 @@ namespace System.Net.Http
         {
             private ulong _contentBytesRemaining;
 
-            public ContentLengthReadStream(HttpConnection connection, ulong contentLength)
-                : base(connection)
+            public ContentLengthReadStream(HttpConnection connection, ulong contentLength) : base(connection)
             {
                 Debug.Assert(contentLength > 0, "Caller should have checked for 0.");
                 _contentBytesRemaining = contentLength;
@@ -28,7 +27,7 @@ namespace System.Net.Http
                 return ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
             }
 
-            public override async ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken cancellationToken = default)
+            public override async ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken cancellationToken)
             {
                 if (_connection == null || destination.Length == 0)
                 {

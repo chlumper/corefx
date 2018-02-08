@@ -15,8 +15,7 @@ namespace System.Net.Http
         {
             private ulong _chunkBytesRemaining;
 
-            public ChunkedEncodingReadStream(HttpConnection connection)
-                : base(connection)
+            public ChunkedEncodingReadStream(HttpConnection connection) : base(connection)
             {
                 _chunkBytesRemaining = 0;
             }
@@ -36,8 +35,7 @@ namespace System.Net.Http
 
                 // We received a chunk size of 0, which indicates end of response body. 
                 // Read and discard any trailing headers, until we see an empty line.
-                while (!LineIsEmpty(await _connection.ReadNextLineAsync(cancellationToken).ConfigureAwait(false)))
-                    ;
+                while (!LineIsEmpty(await _connection.ReadNextLineAsync(cancellationToken).ConfigureAwait(false)));
 
                 _connection.ReturnConnectionToPool();
                 _connection = null;
@@ -98,10 +96,10 @@ namespace System.Net.Http
             public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             {
                 ValidateBufferArgs(buffer, offset, count);
-                return ReadAsync(new Memory<byte>(buffer, offset, count)).AsTask();
+                return ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
             }
 
-            public override async ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken cancellationToken = default)
+            public override async ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken cancellationToken)
             {
                 if (_connection == null || destination.Length == 0)
                 {
