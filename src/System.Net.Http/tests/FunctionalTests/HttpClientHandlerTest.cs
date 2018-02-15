@@ -1556,6 +1556,33 @@ namespace System.Net.Http.Functional.Tests
             }
         }
 
+        [Fact]
+        public async Task GetAsync_MultipartContentType_Success()
+        {
+            await LoopbackServer.CreateClientAndServerAsync(async uri =>
+            {
+                using (HttpClient client = CreateHttpClient())
+                using (HttpResponseMessage response = await client.GetAsync(uri))
+                {
+                    MediaTypeHeaderValue contentType = response.Content.Headers.ContentType;
+                    Assert.Equal("multipart/related", contentType.MediaType);
+                    Assert.Contains(new NameValueHeaderValue("type", "\"application/xop+xml\""), contentType.Parameters);
+                    Assert.Contains(new NameValueHeaderValue("start", "\"<soap.xml@xfire.codehaus.org>\""), contentType.Parameters);
+                    Assert.Contains(new NameValueHeaderValue("start-info", "\"text/xml\""), contentType.Parameters);
+                    Assert.Contains(new NameValueHeaderValue("boundary", "\"----=_Part_166_1126302715.1518037377448\""), contentType.Parameters);
+                    Assert.Equal("hello", await response.Content.ReadAsStringAsync());
+                }
+            }, async server =>
+            {
+                await server.AcceptConnectionSendCustomResponseAndCloseAsync(
+                    "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: multipart/related; type=\"application/xop+xml\"; start=\"<soap.xml@xfire.codehaus.org>\"; start-info=\"text/xml\"; boundary=\"----=_Part_166_1126302715.1518037377448\"\r\n" +
+                    "Content-Length: 5\r\n" +
+                    "\r\n" +
+                    "hello");
+            });
+        }
+
         [OuterLoop] // TODO: Issue #11345
         [Theory, MemberData(nameof(EchoServers))]
         public async Task PostAsync_CallMethod_NullContent(Uri remoteServer)
