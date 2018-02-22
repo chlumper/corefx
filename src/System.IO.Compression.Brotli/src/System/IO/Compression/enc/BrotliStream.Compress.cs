@@ -63,16 +63,16 @@ namespace System.IO.Compression
             return WriteAsync(new ReadOnlyMemory<byte>(array, offset, count), cancellationToken);
         }
 
-        public override Task WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken = default(CancellationToken))
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken = default(CancellationToken))
         {
             if (_mode != CompressionMode.Compress)
                 throw new InvalidOperationException(SR.BrotliStream_Decompress_UnsupportedOperation);
             EnsureNoActiveAsyncOperation();
             EnsureNotDisposed();
 
-            return cancellationToken.IsCancellationRequested ?
+            return new ValueTask(cancellationToken.IsCancellationRequested ?
                 Task.FromCanceled<int>(cancellationToken) :
-                WriteAsyncMemoryCore(source, cancellationToken);
+                WriteAsyncMemoryCore(source, cancellationToken));
         }
 
         private async Task WriteAsyncMemoryCore(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)

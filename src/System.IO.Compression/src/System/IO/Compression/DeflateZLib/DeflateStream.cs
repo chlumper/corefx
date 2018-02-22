@@ -646,7 +646,7 @@ namespace System.IO.Compression
             return WriteAsyncMemory(new ReadOnlyMemory<byte>(array, offset, count), cancellationToken);
         }
 
-        public override Task WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
         {
             if (GetType() != typeof(DeflateStream))
             {
@@ -660,14 +660,14 @@ namespace System.IO.Compression
             }
         }
 
-        internal Task WriteAsyncMemory(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
+        internal ValueTask WriteAsyncMemory(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
         {
             EnsureCompressionMode();
             EnsureNoActiveAsyncOperation();
             EnsureNotDisposed();
 
             return cancellationToken.IsCancellationRequested ?
-                Task.FromCanceled<int>(cancellationToken) :
+                new ValueTask(Task.FromCanceled<int>(cancellationToken)) :
                 WriteAsyncMemoryCore(source, cancellationToken);
         }
 

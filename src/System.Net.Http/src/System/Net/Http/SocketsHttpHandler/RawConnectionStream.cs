@@ -120,27 +120,27 @@ namespace System.Net.Http
                 _connection = null;
             }
 
-            public override Task WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
+            public override ValueTask WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
             {
                 if (cancellationToken.IsCancellationRequested)
                 {
-                    return Task.FromCanceled(cancellationToken);
+                    return new ValueTask(Task.FromCanceled(cancellationToken));
                 }
 
                 if (_connection == null)
                 {
-                    return Task.FromException(new IOException(SR.net_http_io_write));
+                    return ValueTask(Task.FromException(new IOException(SR.net_http_io_write)));
                 }
 
                 if (source.Length == 0)
                 {
-                    return Task.CompletedTask;
+                    return default;
                 }
 
                 Task writeTask = _connection.WriteWithoutBufferingAsync(source);
-                return writeTask.IsCompleted ?
+                return new ValueTask(writeTask.IsCompleted ?
                     writeTask :
-                    WaitWithConnectionCancellationAsync(writeTask, cancellationToken);
+                    WaitWithConnectionCancellationAsync(writeTask, cancellationToken));
             }
 
             public override Task FlushAsync(CancellationToken cancellationToken)

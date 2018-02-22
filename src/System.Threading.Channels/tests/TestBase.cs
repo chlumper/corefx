@@ -24,9 +24,17 @@ namespace System.Threading.Channels.Tests
             AssertSynchronouslyCanceled(task, token);
         }
 
+        protected void AssertSynchronousSuccess<T>(ValueTask<T> task) => Assert.True(task.IsCompletedSuccessfully);
+        protected void AssertSynchronousSuccess(ValueTask task) => Assert.True(task.IsCompletedSuccessfully);
         protected void AssertSynchronousSuccess(Task task) => Assert.Equal(TaskStatus.RanToCompletion, task.Status);
 
         protected void AssertSynchronousTrue(Task<bool> task)
+        {
+            AssertSynchronousSuccess(task);
+            Assert.True(task.Result);
+        }
+
+        protected void AssertSynchronousTrue(ValueTask<bool> task)
         {
             AssertSynchronousSuccess(task);
             Assert.True(task.Result);

@@ -838,7 +838,7 @@ namespace System.Net.Sockets
             }
         }
 
-        public override Task WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken)
         {
             bool canWrite = CanWrite; // Prevent race with Dispose.
             if (_cleanedUp)
@@ -859,8 +859,8 @@ namespace System.Net.Sockets
                     cancellationToken: cancellationToken);
 
                 return t.IsCompletedSuccessfully ?
-                    Task.CompletedTask :
-                    t.AsTask();
+                    default :
+                    new ValueTask(t.AsTask()); // TODO: Wrap ValueTask around underlying object from ValueTask<int>
             }
             catch (Exception exception) when (!(exception is OutOfMemoryException))
             {

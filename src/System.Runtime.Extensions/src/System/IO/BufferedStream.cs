@@ -1043,12 +1043,12 @@ namespace System.IO
             return WriteAsync(new ReadOnlyMemory<byte>(buffer, offset, count), cancellationToken);
         }
 
-        public override Task WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken = default(CancellationToken))
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken = default(CancellationToken))
         {
             // Fast path check for cancellation already requested
             if (cancellationToken.IsCancellationRequested)
             {
-                return Task.FromCanceled<int>(cancellationToken);
+                return new ValueTask(Task.FromCanceled<int>(cancellationToken));
             }
 
             EnsureNotClosed();
@@ -1075,7 +1075,7 @@ namespace System.IO
                     {
                         int bytesWritten = WriteToBuffer(source.Span);
                         Debug.Assert(bytesWritten == source.Length);
-                        return Task.CompletedTask;
+                        return default;
                     }
                 }
                 finally
@@ -1086,7 +1086,7 @@ namespace System.IO
             }
 
             // Delegate to the async implementation.
-            return WriteToUnderlyingStreamAsync(source, cancellationToken, semaphoreLockTask);
+            return new ValueTask(WriteToUnderlyingStreamAsync(source, cancellationToken, semaphoreLockTask));
         }
 
         /// <summary>BufferedStream should be as thin a wrapper as possible. We want WriteAsync to delegate to

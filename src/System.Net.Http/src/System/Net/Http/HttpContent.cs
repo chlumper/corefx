@@ -878,10 +878,10 @@ namespace System.Net.Http
                 return Task.CompletedTask;
             }
 
-            public override Task WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken = default)
+            public override ValueTask WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken = default)
             {
                 Write(source.Span);
-                return Task.CompletedTask;
+                return default;
             }
 
             public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback asyncCallback, object asyncState) =>

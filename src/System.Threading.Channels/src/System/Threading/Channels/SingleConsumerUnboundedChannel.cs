@@ -37,6 +37,7 @@ namespace System.Threading.Channels
 
         /// <summary>A waiting reader (e.g. WaitForReadAsync) if there is one.</summary>
         private ReaderInteractor<bool> _waitingReader;
+        private ReaderInteractor<bool> _readerSingleton;
 
         /// <summary>Initialize the channel.</summary>
         /// <param name="runContinuationsAsynchronously">Whether to force continuations to be executed asynchronously.</param>
@@ -44,7 +45,7 @@ namespace System.Threading.Channels
         {
             _runContinuationsAsynchronously = runContinuationsAsynchronously;
             _completion = new TaskCompletionSource<VoidResult>(runContinuationsAsynchronously ? TaskCreationOptions.RunContinuationsAsynchronously : TaskCreationOptions.None);
-
+            
             Reader = new UnboundedChannelReader(this);
             Writer = new UnboundedChannelWriter(this);
         }
@@ -113,43 +114,61 @@ namespace System.Threading.Channels
                 return false;
             }
 
-            public override Task<bool> WaitToReadAsync(CancellationToken cancellationToken)
+            public override ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken)
             {
                 // Outside of the lock, check if there are any items waiting to be read.  If there are, we're done.
                 return
-                    cancellationToken.IsCancellationRequested ? Task.FromCanceled<bool>(cancellationToken) :
-                    !_parent._items.IsEmpty ? ChannelUtilities.s_trueTask :
+                    cancellationToken.IsCancellationRequested ? new ValueTask<bool>(Task.FromCanceled<bool>(cancellationToken)) :
+                    !_parent._items.IsEmpty ? new ValueTask<bool>(true) :
                     WaitToReadAsyncCore(cancellationToken);
 
-                Task<bool> WaitToReadAsyncCore(CancellationToken ct)
+                ValueTask<bool> WaitToReadAsyncCore(CancellationToken ct)
                 {
                     SingleConsumerUnboundedChannel<T> parent = _parent;
-                    ReaderInteractor<bool> oldWaiter = null, newWaiter;
+                    ReaderInteractor<bool> newWaiter, oldWaiter = null;
                     lock (parent.SyncObj)
                     {
                         // Again while holding the lock, check to see if there are any items available.
                         if (!parent._items.IsEmpty)
                         {
-                            return ChannelUtilities.s_trueTask;
+                            return new ValueTask<bool>(true);
                         }
 
                         // There aren't any items; if we're done writing, there never will be more items.
                         if (parent._doneWriting != null)
                         {
                             return parent._doneWriting != ChannelUtilities.s_doneWritingSentinel ?
-                                Task.FromException<bool>(parent._doneWriting) :
-                                ChannelUtilities.s_falseTask;
+                                new ValueTask<bool>(Task.FromException<bool>(parent._doneWriting)) :
+                                new ValueTask<bool>(false);
                         }
 
-                        // Create the new waiter.  We're a bit more tolerant of a stray waiting reader
-                        // than we are of a blocked reader, as with usage patterns it's easier to leave one
-                        // behind, so we just cancel any that may have been waiting around.
                         oldWaiter = parent._waitingReader;
-                        parent._waitingReader = newWaiter = ReaderInteractor<bool>.Create(parent._runContinuationsAsynchronously, ct);
+                        if (ct.CanBeCanceled)
+                        {
+                            parent._waitingReader = newWaiter = ReaderInteractor<bool>.Create(_parent._runContinuationsAsynchronously, ct);
+                        }
+                        else
+                        {
+                            newWaiter = _parent._readerSingleton;
+                            if (newWaiter == null || !newWaiter.GetResultCalled)
+                            {
+                                _parent._readerSingleton = newWaiter = ReaderInteractor<bool>.Create(_parent._runContinuationsAsynchronously);
+                            }
+                            else
+                            {
+                                if (newWaiter == oldWaiter)
+                                {
+                                    oldWaiter = null;
+                                }
+                                newWaiter.Reset();
+                            }
+
+                            _parent._waitingReader = newWaiter;
+                        }
                     }
 
                     oldWaiter?.TrySetCanceled();
-                    return newWaiter.Task;
+                    return new ValueTask<bool>(newWaiter);
                 }
             }
 
@@ -297,22 +316,22 @@ namespace System.Threading.Channels
                 }
             }
 
-            public override Task<bool> WaitToWriteAsync(CancellationToken cancellationToken)
+            public override ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken)
             {
                 Exception doneWriting = _parent._doneWriting;
                 return
-                    cancellationToken.IsCancellationRequested ? Task.FromCanceled<bool>(cancellationToken) :
-                    doneWriting == null ? ChannelUtilities.s_trueTask :
-                    doneWriting != ChannelUtilities.s_doneWritingSentinel ? Task.FromException<bool>(doneWriting) :
-                    ChannelUtilities.s_falseTask;
+                    cancellationToken.IsCancellationRequested ? new ValueTask<bool>(Task.FromCanceled<bool>(cancellationToken)) :
+                    doneWriting == null ? new ValueTask<bool>(true) :
+                    doneWriting != ChannelUtilities.s_doneWritingSentinel ? new ValueTask<bool>(Task.FromException<bool>(doneWriting)) :
+                    new ValueTask<bool>(false);
             }
 
-            public override Task WriteAsync(T item, CancellationToken cancellationToken) =>
+            public override ValueTask WriteAsync(T item, CancellationToken cancellationToken) =>
                 // Writing always succeeds (unless we've already completed writing or cancellation has been requested),
                 // so just TryWrite and return a completed task.
-                cancellationToken.IsCancellationRequested ? Task.FromCanceled(cancellationToken) :
-                TryWrite(item) ? Task.CompletedTask :
-                Task.FromException(ChannelUtilities.CreateInvalidCompletionException(_parent._doneWriting));
+                cancellationToken.IsCancellationRequested ? new ValueTask(Task.FromCanceled(cancellationToken)) :
+                TryWrite(item) ? default :
+                new ValueTask(Task.FromException(ChannelUtilities.CreateInvalidCompletionException(_parent._doneWriting)));
 
             /// <summary>Gets the number of items in the channel. This should only be used by the debugger.</summary>
             private int ItemsCountForDebugger => _parent._items.Count;
