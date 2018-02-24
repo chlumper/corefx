@@ -46,12 +46,12 @@ namespace System.Net.Sockets
         private static readonly Task<int> s_zeroTask = Task.FromResult(0);
 
         /// <summary>Cached event args used with Task-based async operations.</summary>
-        private CachedTaskEventArgs _cachedTaskEventArgs;
+        private CachedEventArgs _cachedTaskEventArgs;
 
         internal Task<Socket> AcceptAsync(Socket acceptSocket)
         {
             // Get any cached SocketAsyncEventArg we may have.
-            TaskSocketAsyncEventArgs<Socket> saea = Interlocked.Exchange(ref LazyInitializer.EnsureInitialized(ref _cachedTaskEventArgs).Accept, s_rentedSocketSentinel);
+            TaskSocketAsyncEventArgs<Socket> saea = Interlocked.Exchange(ref LazyInitializer.EnsureInitialized(ref _cachedTaskEventArgs).TaskAccept, s_rentedSocketSentinel);
             if (saea == s_rentedSocketSentinel)
             {
                 // An instance was once created (or is currently being created elsewhere), but some other
@@ -197,6 +197,9 @@ namespace System.Net.Sockets
             }
         }
 
+        // TODO https://github.com/dotnet/corefx/issues/24430:
+        // Fully plumb cancellation down into socket operations.
+
         internal ValueTask<int> ReceiveAsync(Memory<byte> buffer, SocketFlags socketFlags, bool fromNetworkStream, CancellationToken cancellationToken)
         {
             if (cancellationToken.IsCancellationRequested)
@@ -204,15 +207,14 @@ namespace System.Net.Sockets
                 return new ValueTask<int>(Task.FromCanceled<int>(cancellationToken));
             }
 
-            // TODO https://github.com/dotnet/corefx/issues/24430:
-            // Fully plumb cancellation down into socket operations.
-
-            Int32TaskSocketAsyncEventArgs saea = RentSocketAsyncEventArgs(isReceive: true);
-            if (saea != null)
+            AwaitableSocketAsyncEventArgs saea = LazyInitializer.EnsureInitialized(ref LazyInitializer.EnsureInitialized(ref _cachedTaskEventArgs).ValueTaskReceive);
+            if (saea.Reserve())
             {
-                // We got a cached instance. Configure the buffer and initate the operation.
-                ConfigureBuffer(saea, buffer, socketFlags, wrapExceptionsInIOExceptions: fromNetworkStream);
-                return GetValueTaskForSendReceive(ReceiveAsync(saea), saea, fromNetworkStream, isReceive: true);
+                if (saea.BufferList != null) saea.BufferList = null;
+                saea.SetBuffer(buffer);
+                saea.SocketFlags = socketFlags;
+                saea.WrapExceptionsInIOExceptions = fromNetworkStream;
+                return saea.ReceiveAsync(this);
             }
             else
             {
@@ -361,28 +363,51 @@ namespace System.Net.Sockets
             }
         }
 
-        internal ValueTask<int> SendAsync(ReadOnlyMemory<byte> buffer, SocketFlags socketFlags, bool fromNetworkStream, CancellationToken cancellationToken)
+        internal ValueTask<int> SendAsync(ReadOnlyMemory<byte> buffer, SocketFlags socketFlags, CancellationToken cancellationToken)
         {
             if (cancellationToken.IsCancellationRequested)
             {
                 return new ValueTask<int>(Task.FromCanceled<int>(cancellationToken));
             }
 
-            // TODO https://github.com/dotnet/corefx/issues/24430:
-            // Fully plumb cancellation down into socket operations.
-
-            Int32TaskSocketAsyncEventArgs saea = RentSocketAsyncEventArgs(isReceive: false);
-            if (saea != null)
+            AwaitableSocketAsyncEventArgs saea = LazyInitializer.EnsureInitialized(ref LazyInitializer.EnsureInitialized(ref _cachedTaskEventArgs).ValueTaskSend);
+            if (saea.Reserve())
             {
-                // We got a cached instance. Configure the buffer and initate the operation.
-                ConfigureBuffer(saea, MemoryMarshal.AsMemory<byte>(buffer), socketFlags, wrapExceptionsInIOExceptions: fromNetworkStream);
-                return GetValueTaskForSendReceive(SendAsync(saea), saea, fromNetworkStream, isReceive: false);
+                if (saea.BufferList != null) saea.BufferList = null;
+                saea.SetBuffer(MemoryMarshal.AsMemory(buffer));
+                saea.SocketFlags = socketFlags;
+                saea.WrapExceptionsInIOExceptions = false;
+                return saea.SendAsync(this);
             }
             else
             {
                 // We couldn't get a cached instance, due to a concurrent send operation on the socket.
                 // Fall back to wrapping APM.
                 return new ValueTask<int>(SendAsyncApm(buffer, socketFlags));
+            }
+        }
+
+        internal ValueTask SendAsyncForNetworkStream(ReadOnlyMemory<byte> buffer, SocketFlags socketFlags, CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return new ValueTask(Task.FromCanceled(cancellationToken));
+            }
+
+            AwaitableSocketAsyncEventArgs saea = LazyInitializer.EnsureInitialized(ref LazyInitializer.EnsureInitialized(ref _cachedTaskEventArgs).ValueTaskSend);
+            if (saea.Reserve())
+            {
+                if (saea.BufferList != null) saea.BufferList = null;
+                saea.SetBuffer(MemoryMarshal.AsMemory(buffer));
+                saea.SocketFlags = socketFlags;
+                saea.WrapExceptionsInIOExceptions = true;
+                return saea.SendAsyncForNetworkStream(this);
+            }
+            else
+            {
+                // We couldn't get a cached instance, due to a concurrent send operation on the socket.
+                // Fall back to wrapping APM.
+                return new ValueTask(SendAsyncApm(buffer, socketFlags));
             }
         }
 
@@ -709,10 +734,10 @@ namespace System.Net.Sockets
         private Int32TaskSocketAsyncEventArgs RentSocketAsyncEventArgs(bool isReceive)
         {
             // Get any cached SocketAsyncEventArg we may have.
-            CachedTaskEventArgs cea = LazyInitializer.EnsureInitialized(ref _cachedTaskEventArgs);
+            CachedEventArgs cea = LazyInitializer.EnsureInitialized(ref _cachedTaskEventArgs);
             Int32TaskSocketAsyncEventArgs saea = isReceive ?
-                Interlocked.Exchange(ref cea.Receive, s_rentedInt32Sentinel) :
-                Interlocked.Exchange(ref cea.Send, s_rentedInt32Sentinel);
+                Interlocked.Exchange(ref cea.TaskReceive, s_rentedInt32Sentinel) :
+                Interlocked.Exchange(ref cea.TaskSend, s_rentedInt32Sentinel);
 
             if (saea == s_rentedInt32Sentinel)
             {
@@ -752,13 +777,13 @@ namespace System.Net.Sockets
             // never null or another instance.
             if (isReceive)
             {
-                Debug.Assert(_cachedTaskEventArgs.Receive == s_rentedInt32Sentinel);
-                Volatile.Write(ref _cachedTaskEventArgs.Receive, saea);
+                Debug.Assert(_cachedTaskEventArgs.TaskReceive == s_rentedInt32Sentinel);
+                Volatile.Write(ref _cachedTaskEventArgs.TaskReceive, saea);
             }
             else
             {
-                Debug.Assert(_cachedTaskEventArgs.Send == s_rentedInt32Sentinel);
-                Volatile.Write(ref _cachedTaskEventArgs.Send, saea);
+                Debug.Assert(_cachedTaskEventArgs.TaskSend == s_rentedInt32Sentinel);
+                Volatile.Write(ref _cachedTaskEventArgs.TaskSend, saea);
             }
         }
 
@@ -779,19 +804,21 @@ namespace System.Net.Sockets
 
             // Write this instance back as a cached instance.  It should only ever be overwriting the sentinel,
             // never null or another instance.
-            Debug.Assert(_cachedTaskEventArgs.Accept == s_rentedSocketSentinel);
-            Volatile.Write(ref _cachedTaskEventArgs.Accept, saea);
+            Debug.Assert(_cachedTaskEventArgs.TaskAccept == s_rentedSocketSentinel);
+            Volatile.Write(ref _cachedTaskEventArgs.TaskAccept, saea);
         }
 
         /// <summary>Dispose of any cached <see cref="Int32TaskSocketAsyncEventArgs"/> instances.</summary>
         private void DisposeCachedTaskSocketAsyncEventArgs()
         {
-            CachedTaskEventArgs cea = _cachedTaskEventArgs;
+            CachedEventArgs cea = _cachedTaskEventArgs;
             if (cea != null)
             {
-                Interlocked.Exchange(ref cea.Accept, s_rentedSocketSentinel)?.Dispose();
-                Interlocked.Exchange(ref cea.Receive, s_rentedInt32Sentinel)?.Dispose();
-                Interlocked.Exchange(ref cea.Send, s_rentedInt32Sentinel)?.Dispose();
+                Interlocked.Exchange(ref cea.TaskAccept, s_rentedSocketSentinel)?.Dispose();
+                Interlocked.Exchange(ref cea.TaskReceive, s_rentedInt32Sentinel)?.Dispose();
+                Interlocked.Exchange(ref cea.TaskSend, s_rentedInt32Sentinel)?.Dispose();
+                Interlocked.Exchange(ref cea.ValueTaskReceive, AwaitableSocketAsyncEventArgs.Reserved)?.Dispose();
+                Interlocked.Exchange(ref cea.ValueTaskSend, AwaitableSocketAsyncEventArgs.Reserved)?.Dispose();
             }
         }
 
@@ -810,14 +837,18 @@ namespace System.Net.Sockets
         }
 
         /// <summary>Cached event args used with Task-based async operations.</summary>
-        private sealed class CachedTaskEventArgs
+        private sealed class CachedEventArgs
         {
             /// <summary>Cached instance for accept operations.</summary>
-            public TaskSocketAsyncEventArgs<Socket> Accept;
-            /// <summary>Cached instance for receive operations.</summary>
-            public Int32TaskSocketAsyncEventArgs Receive;
-            /// <summary>Cached instance for send operations.</summary>
-            public Int32TaskSocketAsyncEventArgs Send;
+            public TaskSocketAsyncEventArgs<Socket> TaskAccept;
+            /// <summary>Cached instance for receive operations that return <see cref="Task{Int32}"/>.</summary>
+            public Int32TaskSocketAsyncEventArgs TaskReceive;
+            /// <summary>Cached instance for send operations that return <see cref="Task{Int32}"/>.</summary>
+            public Int32TaskSocketAsyncEventArgs TaskSend;
+            /// <summary>Cached instance for receive operations that return <see cref="ValueTask{Int32}"/>.</summary>
+            public AwaitableSocketAsyncEventArgs ValueTaskReceive;
+            /// <summary>Cached instance for send operations that return <see cref="ValueTask{Int32}"/>.</summary>
+            public AwaitableSocketAsyncEventArgs ValueTaskSend;
         }
 
         /// <summary>A SocketAsyncEventArgs with an associated async method builder.</summary>
@@ -858,6 +889,249 @@ namespace System.Net.Sockets
             internal Task<int> _successfullyCompletedTask;
             /// <summary>Whether exceptions that emerge should be wrapped in IOExceptions.</summary>
             internal bool _wrapExceptionsInIOExceptions;
+        }
+
+        /// <summary>A SocketAsyncEventArgs that can be awaited to get the result of an operation.</summary>
+        internal sealed class AwaitableSocketAsyncEventArgs : SocketAsyncEventArgs, IValueTaskObject, IValueTaskObject<int>
+        {
+            internal static readonly AwaitableSocketAsyncEventArgs Reserved = new AwaitableSocketAsyncEventArgs() { _continuation = null };
+            /// <summary>Sentinel object used to indicate that the operation has completed prior to OnCompleted being called.</summary>
+            private static readonly Action s_completedSentinel = () => throw new Exception(nameof(s_completedSentinel));
+            /// <summary>Sentinel object used to indicate that the instance is available for use.</summary>
+            private static readonly Action s_availableSentinel = () => throw new Exception(nameof(s_availableSentinel));
+            /// <summary>Event handler for the Completed event.</summary>
+            private static readonly EventHandler<SocketAsyncEventArgs> s_completedHandler = (s, e) =>
+            {
+                // When the operation completes, see if OnCompleted was already called to hook up a continuation.
+                // If it was, invoke the continuation.
+                AwaitableSocketAsyncEventArgs ea = (AwaitableSocketAsyncEventArgs)e;
+                Action c = Volatile.Read(ref ea._continuation);
+                if (c != null || (c = Interlocked.CompareExchange(ref ea._continuation, s_completedSentinel, null)) != null)
+                {
+                    Debug.Assert(c != s_availableSentinel, "The delegate should not have been the available sentinel.");
+                    Debug.Assert(c != s_completedSentinel, "The delegate should not have been the completed sentinel.");
+                    ea.InvokeContinuation(c, forceAsync: false);
+                }
+            };
+            /// <summary>
+            /// <see cref="s_availableSentinel"/> if the object is available for use, after GetResult has been called on a previous use.
+            /// null if the operation has not completed.
+            /// <see cref="s_completedSentinel"/> if it has completed.
+            /// Another delegate if OnCompleted was called before the operation could complete, in which case it's the delegate to invoke
+            /// when the operation does complete.
+            /// </summary>
+            private Action _continuation = s_availableSentinel;
+            private ExecutionContext _executionContext;
+            private object _scheduler;
+
+            /// <summary>Initializes the event args.</summary>
+            /// <param name="socket">The associated socket.</param>
+            /// <param name="buffer">The buffer to use for all operations.</param>
+            public AwaitableSocketAsyncEventArgs() => Completed += s_completedHandler;
+
+            public bool WrapExceptionsInIOExceptions { get; set; }
+
+            public bool Reserve() => Interlocked.CompareExchange(ref _continuation, null, s_availableSentinel) == s_availableSentinel;
+
+            //private void Release() => Volatile.Write(ref _continuation, s_availableSentinel);
+            private void Release()
+            {
+                Action c = Volatile.Read(ref _continuation);
+                Debug.Assert(c != s_availableSentinel, $"c == s_availableSentinel? {c == s_availableSentinel}");
+                bool success = Interlocked.CompareExchange(ref _continuation, s_availableSentinel, c) == c;
+                Debug.Assert(success);
+            }
+
+            /// <summary>Initiates a receive operation on the associated socket.</summary>
+            /// <returns>This instance.</returns>
+            public ValueTask<int> ReceiveAsync(Socket socket)
+            {
+                Debug.Assert(Volatile.Read(ref _continuation) == null, $"Expected null continuation");
+                if (socket.ReceiveAsync(this))
+                {
+                    return new ValueTask<int>(this);
+                }
+
+                int bytesTransferred = BytesTransferred;
+                SocketError error = SocketError;
+
+                Release();
+
+                return error == SocketError.Success ?
+                    new ValueTask<int>(bytesTransferred) :
+                    new ValueTask<int>(Task.FromException<int>(CreateException(error)));
+            }
+
+            /// <summary>Initiates a send operation on the associated socket.</summary>
+            /// <returns>This instance.</returns>
+            public ValueTask<int> SendAsync(Socket socket)
+            {
+                Debug.Assert(Volatile.Read(ref _continuation) == null, $"Expected null continuation");
+                if (socket.SendAsync(this))
+                {
+                    return new ValueTask<int>(this);
+                }
+
+                int bytesTransferred = BytesTransferred;
+                SocketError error = SocketError;
+
+                Release();
+
+                return error == SocketError.Success ?
+                    new ValueTask<int>(bytesTransferred) :
+                    new ValueTask<int>(Task.FromException<int>(CreateException(error)));
+            }
+
+            public ValueTask SendAsyncForNetworkStream(Socket socket)
+            {
+                Debug.Assert(Volatile.Read(ref _continuation) == null, $"Expected null continuation");
+                if (socket.SendAsync(this))
+                {
+                    return new ValueTask(this);
+                }
+
+                SocketError error = SocketError;
+
+                Release();
+
+                return error == SocketError.Success ?
+                    default :
+                    new ValueTask(Task.FromException(CreateException(error)));
+            }
+
+            /// <summary>Gets whether the operation has already completed.</summary>
+            /// <remarks>
+            /// This is not a generically usable IsCompleted operation that suggests the whole operation has completed.
+            /// Rather, it's specifically used as part of the await pattern, and is only usable to determine whether the
+            /// operation has completed by the time the instance is awaited.
+            /// </remarks>
+            public bool IsCompleted => Volatile.Read(ref _continuation) != null;
+
+            /// <summary>Same as <see cref="OnCompleted(Action)"/> </summary>
+            public void UnsafeOnCompleted(Action continuation, bool continueOnCapturedContext) =>
+                OnCompleted(continuation, continueOnCapturedContext, flowExecutionContext: false);
+
+            /// <summary>Queues the provided continuation to be executed once the operation has completed.</summary>
+            public void OnCompleted(Action continuation, bool continueOnCapturedContext) =>
+                OnCompleted(continuation, continueOnCapturedContext, flowExecutionContext: true);
+
+            public void OnCompleted(Action continuation, bool continueOnCapturedContext, bool flowExecutionContext)
+            {
+                if (flowExecutionContext)
+                {
+                    _executionContext = ExecutionContext.Capture();
+                }
+
+                if (continueOnCapturedContext)
+                {
+                    SynchronizationContext sc = SynchronizationContext.Current;
+                    if (sc != null && sc.GetType() != typeof(SynchronizationContext))
+                    {
+                        _scheduler = sc;
+                    }
+                    else
+                    {
+                        TaskScheduler ts = TaskScheduler.Current;
+                        if (ts != TaskScheduler.Default)
+                        {
+                            _scheduler = ts;
+                        }
+                    }
+                }
+
+                if (ReferenceEquals(Interlocked.CompareExchange(ref _continuation, continuation, null), s_completedSentinel))
+                {
+                    InvokeContinuation(continuation, forceAsync: true);
+                }
+            }
+
+            private void InvokeContinuation(Action continuation, bool forceAsync)
+            {
+                ExecutionContext ec = _executionContext;
+                if (ec == null)
+                {
+                    InvokeContinuationCore(continuation, forceAsync);
+                }
+                else
+                {
+                    _executionContext = null;
+                    ExecutionContext.Run(ec, s =>
+                    {
+                        var t = (Tuple<AwaitableSocketAsyncEventArgs, Action, bool>)s;
+                        t.Item1.InvokeContinuationCore(t.Item2, t.Item3);
+                    }, Tuple.Create(this, continuation, forceAsync));
+                }
+            }
+
+            private void InvokeContinuationCore(Action continuation, bool forceAsync)
+            {
+                object scheduler = _scheduler;
+                _scheduler = null;
+
+                if (scheduler != null)
+                {
+                    if (scheduler is SynchronizationContext sc)
+                    {
+                        sc.Post(s => ((Action)s)(), continuation);
+                    }
+                    else
+                    {
+                        Task.Factory.StartNew(continuation, CancellationToken.None, TaskCreationOptions.DenyChildAttach, (TaskScheduler)scheduler);
+                    }
+                }
+                else if (forceAsync)
+                {
+                    Task.Run(continuation);
+                }
+                else
+                {
+                    continuation();
+                }
+            }
+
+            /// <summary>Gets the result of the completion operation.</summary>
+            /// <returns>Number of bytes transferred.</returns>
+            /// <remarks>
+            /// Unlike Task's awaiter's GetResult, this does not block until the operation completes: it must only
+            /// be used once the operation has completed.  This is handled implicitly by await.
+            /// </remarks>
+            public int GetResult()
+            {
+                SocketError error = SocketError;
+                int bytes = BytesTransferred;
+
+                Release();
+
+                if (error != SocketError.Success)
+                {
+                    ThrowException(error);
+                }
+                return bytes;
+            }
+
+            void IValueTaskObject.GetResult()
+            {
+                SocketError error = SocketError;
+
+                Release();
+
+                if (error != SocketError.Success)
+                {
+                    ThrowException(error);
+                }
+            }
+
+            public bool IsCompletedSuccessfully => IsCompleted && SocketError == SocketError.Success;
+
+            private void ThrowException(SocketError error) => throw CreateException(error);
+
+            private Exception CreateException(SocketError error)
+            {
+                var se = new SocketException((int)error);
+                return WrapExceptionsInIOExceptions ? (Exception)
+                    new IOException(SR.Format(SR.net_io_readfailure, se.Message), se) :
+                    se;
+            }
         }
     }
 }

@@ -21,8 +21,8 @@ namespace System.Net.WebSockets.Client.Tests
             return new WebSocketReceiveResult(r.Count, r.MessageType, r.EndOfMessage, ws.CloseStatus, ws.CloseStatusDescription);
         }
 
-        protected override Task SendAsync(WebSocket ws, ArraySegment<byte> arraySegment, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) =>
-            ws.SendAsync(
+        protected override async Task SendAsync(WebSocket ws, ArraySegment<byte> arraySegment, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) =>
+            await ws.SendAsync(
                 arraySegment == default(ArraySegment<byte>) ? ReadOnlyMemory<byte>.Empty : (ReadOnlyMemory<byte>)arraySegment,
                 messageType,
                 endOfMessage,

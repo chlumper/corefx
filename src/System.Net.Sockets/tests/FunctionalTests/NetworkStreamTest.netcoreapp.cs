@@ -48,11 +48,11 @@ namespace System.Net.Sockets.Tests
         {
             await RunWithConnectedNetworkStreamsAsync(async (server, client) =>
             {
-                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => server.WriteAsync((ArraySegment<byte>)new byte[0], new CancellationToken(true)));
-                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => server.ReadAsync((ArraySegment<byte>)new byte[0], new CancellationToken(true)).AsTask());
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await server.WriteAsync((ArraySegment<byte>)new byte[0], new CancellationToken(true)));
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await server.ReadAsync((ArraySegment<byte>)new byte[0], new CancellationToken(true)).AsTask());
 
-                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => server.WriteAsync((ReadOnlyMemory<byte>)new byte[0], new CancellationToken(true)));
-                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => server.ReadAsync((Memory<byte>)new byte[0], new CancellationToken(true)).AsTask());
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await server.WriteAsync((ReadOnlyMemory<byte>)new byte[0], new CancellationToken(true)));
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await server.ReadAsync((Memory<byte>)new byte[0], new CancellationToken(true)).AsTask());
             });
         }
     }

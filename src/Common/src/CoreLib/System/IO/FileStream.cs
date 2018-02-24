@@ -461,7 +461,7 @@ namespace System.IO
             return WriteAsyncInternal(new ReadOnlyMemory<byte>(buffer, offset, count), cancellationToken);
         }
 
-        public override Task WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken = default(CancellationToken))
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> source, CancellationToken cancellationToken = default(CancellationToken))
         {
             if (!_useAsyncIO || GetType() != typeof(FileStream))
             {
@@ -473,7 +473,7 @@ namespace System.IO
 
             if (cancellationToken.IsCancellationRequested)
             {
-                return Task.FromCanceled<int>(cancellationToken);
+                return new ValueTask(Task.FromCanceled<int>(cancellationToken));
             }
 
             if (IsClosed)
@@ -481,7 +481,7 @@ namespace System.IO
                 throw Error.GetFileNotOpen();
             }
 
-            return WriteAsyncInternal(source, cancellationToken);
+            return new ValueTask(WriteAsyncInternal(source, cancellationToken));
         }
 
         /// <summary>

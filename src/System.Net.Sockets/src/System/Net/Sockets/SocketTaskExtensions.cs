@@ -38,7 +38,7 @@ namespace System.Net.Sockets
         public static Task<int> SendAsync(this Socket socket, ArraySegment<byte> buffer, SocketFlags socketFlags) =>
             socket.SendAsync(buffer, socketFlags, fromNetworkStream: false);
         public static ValueTask<int> SendAsync(this Socket socket, ReadOnlyMemory<byte> buffer, SocketFlags socketFlags, CancellationToken cancellationToken = default) =>
-            socket.SendAsync(buffer, socketFlags, fromNetworkStream: false, cancellationToken: cancellationToken);
+            socket.SendAsync(buffer, socketFlags, cancellationToken);
         public static Task<int> SendAsync(this Socket socket, IList<ArraySegment<byte>> buffers, SocketFlags socketFlags) =>
             socket.SendAsync(buffers, socketFlags);
         public static Task<int> SendToAsync(this Socket socket, ArraySegment<byte> buffer, SocketFlags socketFlags, EndPoint remoteEP) =>

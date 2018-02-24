@@ -111,11 +111,11 @@ namespace System.Threading.Channels
                 }
             }
 
-            public override Task<bool> WaitToReadAsync(CancellationToken cancellationToken)
+            public override ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken)
             {
                 if (cancellationToken.IsCancellationRequested)
                 {
-                    return Task.FromCanceled<bool>(cancellationToken);
+                    return new ValueTask<bool>(Task.FromCanceled<bool>(cancellationToken));
                 }
 
                 BoundedChannel<T> parent = _parent;
@@ -126,20 +126,20 @@ namespace System.Threading.Channels
                     // If there are any items available, a read is possible.
                     if (!parent._items.IsEmpty)
                     {
-                        return ChannelUtilities.s_trueTask;
+                        return new ValueTask<bool>(true);
                     }
 
                     // There were no items available, so if we're done writing, a read will never be possible.
                     if (parent._doneWriting != null)
                     {
                         return parent._doneWriting != ChannelUtilities.s_doneWritingSentinel ?
-                            Task.FromException<bool>(parent._doneWriting) :
-                            ChannelUtilities.s_falseTask;
+                            new ValueTask<bool>(Task.FromException<bool>(parent._doneWriting)) :
+                            new ValueTask<bool>(false);
                     }
 
                     // There were no items available, but there could be in the future, so ensure
                     // there's a blocked reader task and return it.
-                    return ChannelUtilities.GetOrCreateWaiter(ref parent._waitingReaders, parent._runContinuationsAsynchronously, cancellationToken);
+                    return new ValueTask<bool>(ChannelUtilities.GetOrCreateWaiter(ref parent._waitingReaders, parent._runContinuationsAsynchronously, cancellationToken));
                 }
             }
 
@@ -352,11 +352,11 @@ namespace System.Threading.Channels
                 return true;
             }
 
-            public override Task<bool> WaitToWriteAsync(CancellationToken cancellationToken)
+            public override ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken)
             {
                 if (cancellationToken.IsCancellationRequested)
                 {
-                    return Task.FromCanceled<bool>(cancellationToken);
+                    return new ValueTask<bool>(Task.FromCanceled<bool>(cancellationToken));
                 }
 
                 BoundedChannel<T> parent = _parent;
@@ -368,8 +368,8 @@ namespace System.Threading.Channels
                     if (parent._doneWriting != null)
                     {
                         return parent._doneWriting != ChannelUtilities.s_doneWritingSentinel ?
-                            Task.FromException<bool>(parent._doneWriting) :
-                            ChannelUtilities.s_falseTask;
+                            new ValueTask<bool>(Task.FromException<bool>(parent._doneWriting)) :
+                            new ValueTask<bool>(false);
                     }
 
                     // If there's space to write, a write is possible.
@@ -377,19 +377,19 @@ namespace System.Threading.Channels
                     // full we'll just drop an element to make room.
                     if (parent._items.Count < parent._bufferedCapacity || parent._mode != BoundedChannelFullMode.Wait)
                     {
-                        return ChannelUtilities.s_trueTask;
+                        return new ValueTask<bool>(true);
                     }
 
                     // We're still allowed to write, but there's no space, so ensure a waiter is queued and return it.
-                    return ChannelUtilities.GetOrCreateWaiter(ref parent._waitingWriters, runContinuationsAsynchronously: true, cancellationToken);
+                    return new ValueTask<bool>(ChannelUtilities.GetOrCreateWaiter(ref parent._waitingWriters, runContinuationsAsynchronously: true, cancellationToken));
                 }
             }
 
-            public override Task WriteAsync(T item, CancellationToken cancellationToken)
+            public override ValueTask WriteAsync(T item, CancellationToken cancellationToken)
             {
                 if (cancellationToken.IsCancellationRequested)
                 {
-                    return Task.FromCanceled(cancellationToken);
+                    return new ValueTask(Task.FromCanceled(cancellationToken));
                 }
 
                 ReaderInteractor<T> blockedReader = null;
@@ -403,7 +403,7 @@ namespace System.Threading.Channels
                     // If we're done writing, trying to write is an error.
                     if (parent._doneWriting != null)
                     {
-                        return Task.FromException(ChannelUtilities.CreateInvalidCompletionException(parent._doneWriting));
+                        return new ValueTask(Task.FromException(ChannelUtilities.CreateInvalidCompletionException(parent._doneWriting)));
                     }
 
                     // Get the number of items in the channel currently.
@@ -435,7 +435,7 @@ namespace System.Threading.Channels
                             waitingReaders = parent._waitingReaders;
                             if (waitingReaders == null)
                             {
-                                return ChannelUtilities.s_trueTask;
+                                return default;
                             }
                             parent._waitingReaders = null;
                         }
@@ -446,7 +446,7 @@ namespace System.Threading.Channels
                         // since there's room, we can simply store the item and exit without having to
                         // worry about blocked/waiting readers.
                         parent._items.EnqueueTail(item);
-                        return ChannelUtilities.s_trueTask;
+                        return default;
                     }
                     else if (parent._mode == BoundedChannelFullMode.Wait)
                     {
@@ -454,13 +454,13 @@ namespace System.Threading.Channels
                         // Queue the writer.
                         var writer = WriterInteractor<T>.Create(runContinuationsAsynchronously: true, item, cancellationToken);
                         parent._blockedWriters.EnqueueTail(writer);
-                        return writer.Task;
+                        return new ValueTask(writer.Task);
                     }
                     else if (parent._mode == BoundedChannelFullMode.DropWrite)
                     {
                         // The channel is full and we're in ignore mode.
                         // Ignore the item but say we accepted it.
-                        return ChannelUtilities.s_trueTask;
+                        return default;
                     }
                     else
                     {
@@ -470,7 +470,7 @@ namespace System.Threading.Channels
                             parent._items.DequeueTail() :
                             parent._items.DequeueHead();
                         parent._items.EnqueueTail(item);
-                        return ChannelUtilities.s_trueTask;
+                        return default;
                     }
                 }
 
@@ -490,7 +490,7 @@ namespace System.Threading.Channels
                     waitingReaders.Success(item: true);
                 }
 
-                return ChannelUtilities.s_trueTask;
+                return default;
             }
 
             /// <summary>Gets the number of items in the channel. This should only be used by the debugger.</summary>
