@@ -905,7 +905,7 @@ namespace System.Net.Sockets
                 // When the operation completes, see if OnCompleted was already called to hook up a continuation.
                 // If it was, invoke the continuation.
                 AwaitableSocketAsyncEventArgs ea = (AwaitableSocketAsyncEventArgs)e;
-                Action c = Volatile.Read(ref ea._continuation);
+                Action c = ea._continuation;
                 if (c != null || (c = Interlocked.CompareExchange(ref ea._continuation, s_completedSentinel, null)) != null)
                 {
                     Debug.Assert(c != s_availableSentinel, "The delegate should not have been the available sentinel.");
@@ -933,20 +933,14 @@ namespace System.Net.Sockets
 
             public bool Reserve() => Interlocked.CompareExchange(ref _continuation, null, s_availableSentinel) == s_availableSentinel;
 
-            //private void Release() => Volatile.Write(ref _continuation, s_availableSentinel);
-            private void Release()
-            {
-                Action c = Volatile.Read(ref _continuation);
-                Debug.Assert(c != s_availableSentinel, $"c == s_availableSentinel? {c == s_availableSentinel}");
-                bool success = Interlocked.CompareExchange(ref _continuation, s_availableSentinel, c) == c;
-                Debug.Assert(success);
-            }
+            private void Release() => Volatile.Write(ref _continuation, s_availableSentinel);
 
             /// <summary>Initiates a receive operation on the associated socket.</summary>
             /// <returns>This instance.</returns>
             public ValueTask<int> ReceiveAsync(Socket socket)
             {
-                Debug.Assert(Volatile.Read(ref _continuation) == null, $"Expected null continuation");
+                Debug.Assert(Volatile.Read(ref _continuation) == null, $"Expected null continuation to indicate reserved for use");
+
                 if (socket.ReceiveAsync(this))
                 {
                     return new ValueTask<int>(this);
@@ -966,7 +960,8 @@ namespace System.Net.Sockets
             /// <returns>This instance.</returns>
             public ValueTask<int> SendAsync(Socket socket)
             {
-                Debug.Assert(Volatile.Read(ref _continuation) == null, $"Expected null continuation");
+                Debug.Assert(Volatile.Read(ref _continuation) == null, $"Expected null continuation to indicate reserved for use");
+
                 if (socket.SendAsync(this))
                 {
                     return new ValueTask<int>(this);
@@ -984,7 +979,8 @@ namespace System.Net.Sockets
 
             public ValueTask SendAsyncForNetworkStream(Socket socket)
             {
-                Debug.Assert(Volatile.Read(ref _continuation) == null, $"Expected null continuation");
+                Debug.Assert(Volatile.Read(ref _continuation) == null, $"Expected null continuation to indicate reserved for use");
+
                 if (socket.SendAsync(this))
                 {
                     return new ValueTask(this);
@@ -1005,24 +1001,17 @@ namespace System.Net.Sockets
             /// Rather, it's specifically used as part of the await pattern, and is only usable to determine whether the
             /// operation has completed by the time the instance is awaited.
             /// </remarks>
-            public bool IsCompleted => Volatile.Read(ref _continuation) != null;
-
-            /// <summary>Same as <see cref="OnCompleted(Action)"/> </summary>
-            public void UnsafeOnCompleted(Action continuation, bool continueOnCapturedContext) =>
-                OnCompleted(continuation, continueOnCapturedContext, flowExecutionContext: false);
+            public bool IsCompleted => _continuation != null;
 
             /// <summary>Queues the provided continuation to be executed once the operation has completed.</summary>
-            public void OnCompleted(Action continuation, bool continueOnCapturedContext) =>
-                OnCompleted(continuation, continueOnCapturedContext, flowExecutionContext: true);
-
-            public void OnCompleted(Action continuation, bool continueOnCapturedContext, bool flowExecutionContext)
+            public void OnCompleted(Action continuation, ValueTaskObjectOnCompletedFlags flags)
             {
-                if (flowExecutionContext)
+                if ((flags & ValueTaskObjectOnCompletedFlags.FlowExecutionContext) != 0)
                 {
                     _executionContext = ExecutionContext.Capture();
                 }
 
-                if (continueOnCapturedContext)
+                if ((flags & ValueTaskObjectOnCompletedFlags.UseSchedulingContext) != 0)
                 {
                     SynchronizationContext sc = SynchronizationContext.Current;
                     if (sc != null && sc.GetType() != typeof(SynchronizationContext))

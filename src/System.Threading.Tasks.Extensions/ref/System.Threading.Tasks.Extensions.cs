@@ -82,21 +82,26 @@ namespace System.Runtime.CompilerServices
 }
 namespace System.Threading.Tasks
 {
+    [Flags]
+    public enum ValueTaskObjectOnCompletedFlags
+    {
+        None,
+        UseSchedulingContext = 0x1,
+        FlowExecutionContext = 0x2,
+    }
     public interface IValueTaskObject
     {
         bool IsCompleted { get; }
         bool IsCompletedSuccessfully { get; }
+        void OnCompleted(Action continuation, ValueTaskObjectOnCompletedFlags flags);
         void GetResult();
-        void OnCompleted(Action continuation, bool continueOnCapturedContext);
-        void UnsafeOnCompleted(Action continuation, bool continueOnCapturedContext);
     }
     public interface IValueTaskObject<out TResult>
     {
         bool IsCompleted { get; }
         bool IsCompletedSuccessfully { get; }
+        void OnCompleted(Action continuation, ValueTaskObjectOnCompletedFlags flags);
         TResult GetResult();
-        void OnCompleted(Action continuation, bool continueOnCapturedContext);
-        void UnsafeOnCompleted(Action continuation, bool continueOnCapturedContext);
     }
     [System.Runtime.CompilerServices.AsyncMethodBuilderAttribute(typeof(System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder))]
     public readonly partial struct ValueTask : System.IEquatable<System.Threading.Tasks.ValueTask>

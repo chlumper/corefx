@@ -120,4 +120,7 @@
   <data name="ChannelClosedException_DefaultMessage" xml:space="preserve">
     <value>The channel has been closed.</value>
   </data>
+  <data name="InvalidOperation_IncompleteAsyncOperation" xml:space="preserve">
+    <value>The asynchronous operation has not completed.</value>
+  </data>
 </root>

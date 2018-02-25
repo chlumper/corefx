@@ -51,11 +51,14 @@ namespace System.Threading.Tasks
             _error = null;
         }
 
-        public void OnCompleted(Action continuation, bool continueOnCapturedContext)
+        public void OnCompleted(Action continuation, ValueTaskObjectOnCompletedFlags flags)
         {
-            _executionContext = ExecutionContext.Capture();
+            if ((flags & ValueTaskObjectOnCompletedFlags.FlowExecutionContext) != 0)
+            {
+                _executionContext = ExecutionContext.Capture();
+            }
 
-            if (continueOnCapturedContext)
+            if ((flags & ValueTaskObjectOnCompletedFlags.UseSchedulingContext) != 0)
             {
                 _capturedContext = SynchronizationContext.Current;
             }
@@ -71,28 +74,6 @@ namespace System.Threading.Tasks
                 else
                 {
                     ThreadPool.QueueUserWorkItem(s => ((Action)s)(), continuation);
-                }
-            }
-        }
-
-        public void UnsafeOnCompleted(Action continuation, bool continueOnCapturedContext)
-        {
-            if (continueOnCapturedContext)
-            {
-                _capturedContext = SynchronizationContext.Current;
-            }
-
-            if (_continuation != null || Interlocked.CompareExchange(ref _continuation, continuation, null) != null)
-            {
-                SynchronizationContext sc = _capturedContext;
-                if (sc != null)
-                {
-                    _capturedContext = null;
-                    sc.Post(s => ((Action)s)(), continuation);
-                }
-                else
-                {
-                    ThreadPool.UnsafeQueueUserWorkItem(s => ((Action)s)(), continuation);
                 }
             }
         }
