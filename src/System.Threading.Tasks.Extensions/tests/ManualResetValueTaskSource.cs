@@ -4,22 +4,52 @@
 
 using System.Runtime.ExceptionServices;
 
-namespace System.Threading.Tasks
+namespace System.Threading.Tasks.Tests
 {
-    internal sealed class ManualResetValueTaskSource
+    internal static class ManualResetValueTaskSource
     {
-        internal static readonly Action s_sentinel = new Action(() => { });
+        public static ManualResetValueTaskSource<T> Completed<T>(T result, Exception error = null)
+        {
+            var vts = new ManualResetValueTaskSource<T>();
+            if (error != null)
+            {
+                vts.SetException(error);
+            }
+            else
+            {
+                vts.SetResult(result);
+            }
+            return vts;
+        }
+
+        public static ManualResetValueTaskSource<T> Delay<T>(int delayMs, T result, Exception error = null)
+        {
+            var vts = new ManualResetValueTaskSource<T>();
+            Task.Delay(delayMs).ContinueWith(_ =>
+            {
+                if (error != null)
+                {
+                    vts.SetException(error);
+                }
+                else
+                {
+                    vts.SetResult(result);
+                }
+            });
+            return vts;
+        }
     }
 
-    internal sealed class ManualResetValueTaskSource<T> : IValueTaskSource<T>
+    internal sealed class ManualResetValueTaskSource<T> : IValueTaskSource<T>, IValueTaskSource
     {
-        private readonly ManualResetEventSlim _completeEvent = new ManualResetEventSlim();
+        private static readonly Action<object> s_sentinel = new Action<object>(s => { });
+        private Action<object> _continuation;
+        private object _continuationState;
+        private SynchronizationContext _capturedContext;
+        private ExecutionContext _executionContext;
         private bool _completed;
         private T _result;
         private ExceptionDispatchInfo _error;
-        private Action _continuation;
-        private SynchronizationContext _capturedContext;
-        private ExecutionContext _executionContext;
 
         public bool IsCompleted => _completed;
         public bool IsCompletedSuccessfully => _completed && _error == null;
@@ -28,8 +58,7 @@ namespace System.Threading.Tasks
         {
             if (!_completed)
             {
-                _completeEvent.Wait();
-                _completeEvent.Reset();
+                throw new Exception("Not completed");
             }
 
             ExecutionContext ctx = _executionContext;
@@ -43,10 +72,16 @@ namespace System.Threading.Tasks
             return _result;
         }
 
+        void IValueTaskSource.GetResult()
+        {
+            GetResult();
+        }
+
         public void Reset()
         {
             _completed = false;
             _continuation = null;
+            _continuationState = null;
             _result = default;
             _error = null;
         }
@@ -63,7 +98,8 @@ namespace System.Threading.Tasks
                 _capturedContext = SynchronizationContext.Current;
             }
 
-            if (_continuation != null || Interlocked.CompareExchange(ref _continuation, continuation, null) != null)
+            _continuationState = state;
+            if (Interlocked.CompareExchange(ref _continuation, continuation, null) != null)
             {
                 SynchronizationContext sc = _capturedContext;
                 if (sc != null)
@@ -74,7 +110,6 @@ namespace System.Threading.Tasks
                         var tuple = (Tuple<Action<object>, object>)s;
                         tuple.Item1(tuple.Item2);
                     }, Tuple.Create(continuation, state));
-
                 }
                 else
                 {
@@ -98,7 +133,7 @@ namespace System.Threading.Tasks
         private void SignalCompletion()
         {
             _completed = true;
-            if (_continuation != null || Interlocked.CompareExchange(ref _continuation, ManualResetValueTaskSource.s_sentinel, null) != null)
+            if (Interlocked.CompareExchange(ref _continuation, s_sentinel, null) != null)
             {
                 if (_executionContext != null)
                 {
@@ -117,11 +152,15 @@ namespace System.Threading.Tasks
             if (sc != null)
             {
                 _capturedContext = null;
-                sc.Post(s => ((Action)s)(), _continuation);
+                sc.Post(s =>
+                {
+                    var thisRef = (ManualResetValueTaskSource<T>)s;
+                    thisRef._continuation(thisRef._continuationState);
+                }, this);
             }
             else
             {
-                _continuation();
+                _continuation(_continuationState);
             }
         }
     }
