@@ -9,11 +9,11 @@ namespace System.Threading.Channels.Tests
 {
     public class BoundedChannelTests : ChannelTestBase
     {
-        protected override Channel<int> CreateChannel() => Channel.CreateBounded<int>(1);
-        protected override Channel<int> CreateFullChannel()
+        protected override Channel<T> CreateChannel<T>() => Channel.CreateBounded<T>(new BoundedChannelOptions(1) { AllowSynchronousContinuations = AllowSynchronousContinuations });
+        protected override Channel<T> CreateFullChannel<T>()
         {
-            var c = Channel.CreateBounded<int>(1);
-            c.Writer.WriteAsync(42).AsTask().Wait();
+            var c = Channel.CreateBounded<T>(new BoundedChannelOptions(1) { AllowSynchronousContinuations = AllowSynchronousContinuations });
+            c.Writer.WriteAsync(default).AsTask().Wait();
             return c;
         }
 
@@ -391,13 +391,13 @@ namespace System.Threading.Channels.Tests
         }
 
         [Fact]
-        public void TryWrite_NoBlockedReaders_WaitingReader_WaiterNotified()
+        public async Task TryWrite_NoBlockedReaders_WaitingReader_WaiterNotified()
         {
             Channel<int> c = CreateChannel();
 
             Task<bool> r = c.Reader.WaitToReadAsync().AsTask();
             Assert.True(c.Writer.TryWrite(42));
-            AssertSynchronousTrue(r);
+            Assert.True(await r);
         }
     }
 }

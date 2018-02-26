@@ -33,7 +33,7 @@ namespace System.Threading.Channels
         {
             _runContinuationsAsynchronously = runContinuationsAsynchronously;
             _completion = new TaskCompletionSource<VoidResult>(runContinuationsAsynchronously ? TaskCreationOptions.RunContinuationsAsynchronously : TaskCreationOptions.None);
-            base.Reader = new UnboundedChannelReader(this);
+            Reader = new UnboundedChannelReader(this);
             Writer = new UnboundedChannelWriter(this);
         }
 
@@ -42,7 +42,15 @@ namespace System.Threading.Channels
         private sealed class UnboundedChannelReader : ChannelReader<T>, IDebugEnumerable<T>
         {
             internal readonly UnboundedChannel<T> _parent;
-            internal UnboundedChannelReader(UnboundedChannel<T> parent) => _parent = parent;
+            private readonly AsyncOperation<T> _readerSingleton;
+            private readonly AsyncOperation<bool> _waiterSingleton;
+
+            internal UnboundedChannelReader(UnboundedChannel<T> parent)
+            {
+                _parent = parent;
+                _readerSingleton = new AsyncOperation<T>(parent._runContinuationsAsynchronously) { UnsafeState = ResettableValueTaskObject.States.Released };
+                _waiterSingleton = new AsyncOperation<bool>(parent._runContinuationsAsynchronously) { UnsafeState = ResettableValueTaskObject.States.Released };
+            }
 
             public override Task Completion => _parent._completion.Task;
 
@@ -82,7 +90,18 @@ namespace System.Threading.Channels
                         return ChannelUtilities.GetInvalidCompletionValueTask<T>(parent._doneWriting);
                     }
 
-                    // Otherwise, queue the reader.
+                    // If we're able to use the singleton reader, do so.
+                    if (!cancellationToken.CanBeCanceled)
+                    {
+                        AsyncOperation<T> singleton = _readerSingleton;
+                        if (singleton.TryOwnAndReset())
+                        {
+                            parent._blockedReaders.EnqueueTail(singleton);
+                            return new ValueTask<T>(singleton);
+                        }
+                    }
+
+                    // Otherwise, create and queue a reader.
                     var reader = new AsyncOperation<T>(parent._runContinuationsAsynchronously, cancellationToken);
                     parent._blockedReaders.EnqueueTail(reader);
                     return new ValueTask<T>(reader);
@@ -140,7 +159,18 @@ namespace System.Threading.Channels
                             new ValueTask<bool>(false);
                     }
 
-                    // Queue the waiter
+                    // If we're able to use the singleton waiter, do so.
+                    if (!cancellationToken.CanBeCanceled)
+                    {
+                        AsyncOperation<bool> singleton = _waiterSingleton;
+                        if (singleton.TryOwnAndReset())
+                        {
+                            ChannelUtilities.QueueWaiter(ref parent._waitingReadersTail, singleton);
+                            return new ValueTask<bool>(singleton);
+                        }
+                    }
+
+                    // Otherwise, create and queue a waiter.
                     var waiter = new AsyncOperation<bool>(parent._runContinuationsAsynchronously, cancellationToken);
                     ChannelUtilities.QueueWaiter(ref parent._waitingReadersTail, waiter);
                     return new ValueTask<bool>(waiter);

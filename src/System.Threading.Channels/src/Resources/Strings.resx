@@ -123,4 +123,7 @@
   <data name="InvalidOperation_IncompleteAsyncOperation" xml:space="preserve">
     <value>The asynchronous operation has not completed.</value>
   </data>
+  <data name="InvalidOperation_MultipleContinuations" xml:space="preserve">
+    <value>OnCompleted has already been used to register another continuation.</value>
+  </data>
 </root>

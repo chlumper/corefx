@@ -8,37 +8,38 @@ using System.Threading.Tasks;
 
 namespace System.Threading.Channels
 {
-    internal static class ResettableValueTaskObjectState
+    internal abstract class ResettableValueTaskObject
     {
-        internal static readonly Action Sentinel = () => throw new Exception(nameof(ResettableValueTaskObjectState) + "." + nameof(Sentinel));
+        protected static readonly Action s_completedSentinel = () => Debug.Fail($"{nameof(ResettableValueTaskObject)}.{nameof(s_completedSentinel)} invoked.");
+
+        protected static void ThrowIncompleteOperationException() =>
+            throw new InvalidOperationException(SR.InvalidOperation_IncompleteAsyncOperation);
+
+        protected static void ThrowMultipleContinuations() =>
+            throw new InvalidOperationException(SR.InvalidOperation_MultipleContinuations);
+
+        public enum States
+        {
+            Owned = 0,
+            CompletionReserved = 1,
+            CompletionSet = 2,
+            Released = 3
+        }
     }
 
-    internal abstract class ResettableValueTaskObject<T> : IValueTaskObject<T>, IValueTaskObject
+    internal abstract class ResettableValueTaskObject<T> : ResettableValueTaskObject, IValueTaskObject<T>, IValueTaskObject
     {
-        private enum CompletionStates
-        {
-            Initialized = 0,
-            CompletionReserved = 1,
-            Completed = 2,
-            Canceled = 3,
-            Faulted = 4
-        }
-
-        private volatile int _completionState; // CompletionStates
-        private volatile bool _getResultCalled;
+        private volatile int _state = (int)States.Owned;
         private T _result;
         private ExceptionDispatchInfo _error;
         private Action _continuation;
         private object _schedulingContext;
         private ExecutionContext _executionContext;
 
-        public bool RunContinutationsAsynchronously { get; set; }
-        public bool IsCompleted => _completionState >= (int)CompletionStates.Completed;
-        public bool IsCompletedSuccessfully => _completionState == (int)CompletionStates.Completed;
-        public bool GetResultCalled => _getResultCalled;
-
-        private static void ThrowIncompleteOperationException() =>
-            throw new InvalidOperationException(SR.InvalidOperation_IncompleteAsyncOperation);
+        public bool RunContinutationsAsynchronously { get; protected set; }
+        public bool IsCompleted => _state >= (int)States.CompletionSet;
+        public bool IsCompletedSuccessfully => IsCompleted && _error == null;
+        public States UnsafeState { get => (States)_state; set => _state = (int)value; }
 
         public T GetResult()
         {
@@ -50,7 +51,7 @@ namespace System.Threading.Channels
             ExceptionDispatchInfo error = _error;
             T result = _result;
 
-            _getResultCalled = true; // after fetching all needed data
+            _state = (int)States.Released; // only after fetching all needed data
 
             error?.Throw();
             return result;
@@ -65,18 +66,24 @@ namespace System.Threading.Channels
 
             ExceptionDispatchInfo error = _error;
 
-            _getResultCalled = true; // after fetching all needed data
+            _state = (int)States.Released; // only after fetching all needed data
 
             error?.Throw();
         }
 
-        public void Reset()
+        public bool TryOwnAndReset()
         {
-            _completionState = (int)CompletionStates.Initialized;
-            _continuation = null;
-            _result = default;
-            _error = null;
-            _getResultCalled = false;
+            if (Interlocked.CompareExchange(ref _state, (int)States.Owned, (int)States.Released) == (int)States.Released)
+            {
+                _continuation = null;
+                _result = default;
+                _error = null;
+                _schedulingContext = null;
+                _executionContext = null;
+                return true;
+            }
+
+            return false;
         }
 
         public void OnCompleted(Action continuation, ValueTaskObjectOnCompletedFlags flags)
@@ -105,23 +112,26 @@ namespace System.Threading.Channels
                 }
             }
 
-            if (Interlocked.CompareExchange(ref _continuation, continuation, null) != null)
+            Action prevContinuation = Interlocked.CompareExchange(ref _continuation, continuation, null);
+            if (prevContinuation != null)
             {
-                Debug.Assert(ReferenceEquals(_continuation, ResettableValueTaskObjectState.Sentinel), $"Expected continuation to be sentinel; it wasn't, and continuation==_continuation is {ReferenceEquals(_continuation, continuation)}");
-                Debug.Assert(IsCompleted, $"Expected IsCompleted, got {(CompletionStates)_completionState}");
+                if (prevContinuation != s_completedSentinel)
+                {
+                    ThrowMultipleContinuations();
+                }
+
+                Debug.Assert(IsCompleted, $"Expected IsCompleted, got {(States)_state}");
                 if (sc != null)
                 {
-                    _schedulingContext = null;
                     sc.Post(s => ((Action)s)(), continuation);
                 }
                 else if (ts != null)
                 {
-                    _schedulingContext = null;
                     Task.Factory.StartNew(continuation, CancellationToken.None, TaskCreationOptions.DenyChildAttach, ts);
                 }
                 else
                 {
-                    Debug.Assert(_schedulingContext == null);
+                    Debug.Assert(_schedulingContext == null, $"Expected null context, got {_schedulingContext}");
                     if (_executionContext != null)
                     {
                         _executionContext = null;
@@ -137,10 +147,10 @@ namespace System.Threading.Channels
 
         public bool TrySetResult(T result)
         {
-            if (Interlocked.CompareExchange(ref _completionState, (int)CompletionStates.CompletionReserved, (int)CompletionStates.Initialized) == (int)CompletionStates.Initialized)
+            if (Interlocked.CompareExchange(ref _state, (int)States.CompletionReserved, (int)States.Owned) == (int)States.Owned)
             {
                 _result = result;
-                SignalCompletion(CompletionStates.Completed);
+                SignalCompletion();
                 return true;
             }
 
@@ -149,10 +159,10 @@ namespace System.Threading.Channels
 
         public bool TrySetException(Exception error)
         {
-            if (Interlocked.CompareExchange(ref _completionState, (int)CompletionStates.CompletionReserved, (int)CompletionStates.Initialized) == (int)CompletionStates.Initialized)
+            if (Interlocked.CompareExchange(ref _state, (int)States.CompletionReserved, (int)States.Owned) == (int)States.Owned)
             {
                 _error = ExceptionDispatchInfo.Capture(error);
-                SignalCompletion(CompletionStates.Faulted);
+                SignalCompletion();
                 return true;
             }
 
@@ -161,24 +171,25 @@ namespace System.Threading.Channels
 
         public bool TrySetCanceled(CancellationToken cancellationToken = default)
         {
-            if (Interlocked.CompareExchange(ref _completionState, (int)CompletionStates.CompletionReserved, (int)CompletionStates.Initialized) == (int)CompletionStates.Initialized)
+            if (Interlocked.CompareExchange(ref _state, (int)States.CompletionReserved, (int)States.Owned) == (int)States.Owned)
             {
                 _error = ExceptionDispatchInfo.Capture(new OperationCanceledException(cancellationToken));
-                SignalCompletion(CompletionStates.Canceled);
+                SignalCompletion();
                 return true;
             }
 
             return false;
         }
 
-        private void SignalCompletion(CompletionStates state)
+        private void SignalCompletion()
         {
-            _completionState = (int)state;
-            if (_continuation != null || Interlocked.CompareExchange(ref _continuation, ResettableValueTaskObjectState.Sentinel, null) != null)
+            _state = (int)States.CompletionSet;
+            if (_continuation != null || Interlocked.CompareExchange(ref _continuation, s_completedSentinel, null) != null)
             {
-                if (_executionContext != null)
+                ExecutionContext ec = _executionContext;
+                if (ec != null)
                 {
-                    ExecutionContext.Run(_executionContext, s => ((ResettableValueTaskObject<T>)s).InvokeContinuation(), this);
+                    ExecutionContext.Run(ec, s => ((ResettableValueTaskObject<T>)s).InvokeContinuation(), this);
                 }
                 else
                 {
@@ -191,6 +202,7 @@ namespace System.Threading.Channels
         {
             object schedulingContext = _schedulingContext;
             Action continuation = _continuation;
+            Debug.Assert(continuation != s_completedSentinel, $"The continuation was the completion sentinel. State={(States)_state}.");
 
             if (schedulingContext == null)
             {
@@ -275,7 +287,8 @@ namespace System.Threading.Channels
         /// <summary>Initializes the interactor.</summary>
         /// <param name="runContinuationsAsynchronously">true if continuations should be forced to run asynchronously; otherwise, false.</param>
         /// <param name="cancellationToken">The cancellation token used to cancel the operation.</param>
-        public VoidAsyncOperationWithData(bool runContinuationsAsynchronously, CancellationToken cancellationToken = default) : base(runContinuationsAsynchronously, cancellationToken)
+        public VoidAsyncOperationWithData(bool runContinuationsAsynchronously, CancellationToken cancellationToken = default) :
+            base(runContinuationsAsynchronously, cancellationToken)
         {
         }
 

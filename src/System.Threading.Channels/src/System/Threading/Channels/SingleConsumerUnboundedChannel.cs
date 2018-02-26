@@ -6,7 +6,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
-using System.Runtime.CompilerServices;
 
 namespace System.Threading.Channels
 {
@@ -54,8 +53,15 @@ namespace System.Threading.Channels
         private sealed class UnboundedChannelReader : ChannelReader<T>, IDebugEnumerable<T>
         {
             internal readonly SingleConsumerUnboundedChannel<T> _parent;
-            internal UnboundedChannelReader(SingleConsumerUnboundedChannel<T> parent) => _parent = parent;
-            private AsyncOperation<T> _readerSingleton;
+            private readonly AsyncOperation<T> _readerSingleton;
+            private readonly AsyncOperation<bool> _waiterSingleton;
+
+            internal UnboundedChannelReader(SingleConsumerUnboundedChannel<T> parent)
+            {
+                _parent = parent;
+                _readerSingleton = new AsyncOperation<T>(parent._runContinuationsAsynchronously) { UnsafeState = ResettableValueTaskObject.States.Released };
+                _waiterSingleton = new AsyncOperation<bool>(parent._runContinuationsAsynchronously) { UnsafeState = ResettableValueTaskObject.States.Released };
+            }
 
             public override Task Completion => _parent._completion.Task;
 
@@ -88,29 +94,24 @@ namespace System.Threading.Channels
                         return ChannelUtilities.GetInvalidCompletionValueTask<T>(parent._doneWriting);
                     }
 
+                    // Try to use the singleton reader.  If it's currently being used, then the channel
+                    // is being used erroneously, and we cancel the outstanding operation.
                     oldBlockedReader = parent._blockedReader;
-                    if (cancellationToken.CanBeCanceled)
+                    if (!cancellationToken.CanBeCanceled && _readerSingleton.TryOwnAndReset())
                     {
-                        parent._blockedReader = newBlockedReader = new AsyncOperation<T>(parent._runContinuationsAsynchronously, cancellationToken);
+                        newBlockedReader = _readerSingleton;
+                        if (newBlockedReader == oldBlockedReader)
+                        {
+                            // The previous operation completed, so null out the "old" reader
+                            // so we don't end up canceling the new operation.
+                            oldBlockedReader = null;
+                        }
                     }
                     else
                     {
-                        newBlockedReader = _readerSingleton;
-                        if (newBlockedReader == null || !newBlockedReader.GetResultCalled)
-                        {
-                            _readerSingleton = newBlockedReader = new AsyncOperation<T>(_parent._runContinuationsAsynchronously);
-                        }
-                        else
-                        {
-                            if (newBlockedReader == oldBlockedReader)
-                            {
-                                oldBlockedReader = null;
-                            }
-                            newBlockedReader.Reset();
-                        }
-
-                        _parent._blockedReader = newBlockedReader;
+                        newBlockedReader = new AsyncOperation<T>(_parent._runContinuationsAsynchronously, cancellationToken);
                     }
+                    parent._blockedReader = newBlockedReader;
                 }
 
                 oldBlockedReader?.TrySetCanceled();
@@ -145,7 +146,7 @@ namespace System.Threading.Channels
                 }
 
                 SingleConsumerUnboundedChannel<T> parent = _parent;
-                AsyncOperation<bool> oldWaiter = null, newWaiter;
+                AsyncOperation<bool> oldWaitingReader = null, newWaitingReader;
                 lock (parent.SyncObj)
                 {
                     // Again while holding the lock, check to see if there are any items available.
@@ -162,15 +163,28 @@ namespace System.Threading.Channels
                             new ValueTask<bool>(false);
                     }
 
-                    // Create the new waiter.  We're a bit more tolerant of a stray waiting reader
-                    // than we are of a blocked reader, as with usage patterns it's easier to leave one
-                    // behind, so we just cancel any that may have been waiting around.
-                    oldWaiter = parent._waitingReader;
-                    parent._waitingReader = newWaiter = new AsyncOperation<bool>(parent._runContinuationsAsynchronously, cancellationToken);
+                    // Try to use the singleton waiter.  If it's currently being used, then the channel
+                    // is being used erroneously, and we cancel the outstanding operation.
+                    oldWaitingReader = parent._waitingReader;
+                    if (!cancellationToken.CanBeCanceled && _waiterSingleton.TryOwnAndReset())
+                    {
+                        newWaitingReader = _waiterSingleton;
+                        if (newWaitingReader == oldWaitingReader)
+                        {
+                            // The previous operation completed, so null out the "old" waiter
+                            // so we don't end up canceling the new operation.
+                            oldWaitingReader = null;
+                        }
+                    }
+                    else
+                    {
+                        newWaitingReader = new AsyncOperation<bool>(_parent._runContinuationsAsynchronously, cancellationToken);
+                    }
+                    parent._waitingReader = newWaitingReader;
                 }
 
-                oldWaiter?.TrySetCanceled();
-                return new ValueTask<bool>(newWaiter);
+                oldWaitingReader?.TrySetCanceled();
+                return new ValueTask<bool>(newWaitingReader);
             }
 
             /// <summary>Gets the number of items in the channel.  This should only be used by the debugger.</summary>

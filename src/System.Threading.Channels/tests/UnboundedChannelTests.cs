@@ -10,14 +10,13 @@ namespace System.Threading.Channels.Tests
 {
     public abstract class UnboundedChannelTests : ChannelTestBase
     {
-        protected abstract bool AllowSynchronousContinuations { get; }
-        protected override Channel<int> CreateChannel() => Channel.CreateUnbounded<int>(
+        protected override Channel<T> CreateChannel<T>() => Channel.CreateUnbounded<T>(
             new UnboundedChannelOptions
             {
                 SingleReader = RequiresSingleReader,
                 AllowSynchronousContinuations = AllowSynchronousContinuations
             });
-        protected override Channel<int> CreateFullChannel() => null;
+        protected override Channel<T> CreateFullChannel<T>() => null;
 
         [Fact]
         public async Task Complete_BeforeEmpty_NoWaiters_TriggersCompletion()
@@ -160,6 +159,17 @@ namespace System.Threading.Channels.Tests
             await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await t1);
             Assert.True(c.Writer.TryWrite(42));
             Assert.True(await t2);
+        }
+
+        [Fact]
+        public async Task MultipleReaders_CancelsPreviousReader()
+        {
+            Channel<int> c = CreateChannel();
+            ValueTask<int> t1 = c.Reader.ReadAsync();
+            ValueTask<int> t2 = c.Reader.ReadAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await t1);
+            Assert.True(c.Writer.TryWrite(42));
+            Assert.Equal(42, await t2);
         }
 
         [Fact]

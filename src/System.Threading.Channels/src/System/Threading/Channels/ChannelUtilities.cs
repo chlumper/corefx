@@ -2,7 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
@@ -77,7 +76,7 @@ namespace System.Threading.Channels
             return new ValueTask<bool>(waiter);
         }
 
-        internal static void WakeUpWaiters(ref AsyncOperation<bool> listTail, bool result, Exception error = null, ConcurrentQueue<AsyncOperation<bool>> returnCache = null)
+        internal static void WakeUpWaiters(ref AsyncOperation<bool> listTail, bool result, Exception error = null)
         {
             AsyncOperation<bool> tail = listTail;
             if (tail != null)
@@ -93,10 +92,6 @@ namespace System.Threading.Channels
 
                     bool completed = error != null ? c.Fail(error) : c.Success(result);
                     Debug.Assert(completed || c.CancellationToken.CanBeCanceled);
-                    if (completed)
-                    {
-                        returnCache?.Enqueue(tail);
-                    }
 
                     c = next;
                 }
