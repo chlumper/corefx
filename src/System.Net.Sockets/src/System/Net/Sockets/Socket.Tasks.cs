@@ -892,25 +892,28 @@ namespace System.Net.Sockets
         }
 
         /// <summary>A SocketAsyncEventArgs that can be awaited to get the result of an operation.</summary>
-        internal sealed class AwaitableSocketAsyncEventArgs : SocketAsyncEventArgs, IValueTaskObject, IValueTaskObject<int>
+        internal sealed class AwaitableSocketAsyncEventArgs : SocketAsyncEventArgs, IValueTaskSource, IValueTaskSource<int>
         {
             internal static readonly AwaitableSocketAsyncEventArgs Reserved = new AwaitableSocketAsyncEventArgs() { _continuation = null };
             /// <summary>Sentinel object used to indicate that the operation has completed prior to OnCompleted being called.</summary>
-            private static readonly Action s_completedSentinel = () => throw new Exception(nameof(s_completedSentinel));
+            private static readonly Action<object> s_completedSentinel = state => throw new Exception(nameof(s_completedSentinel));
             /// <summary>Sentinel object used to indicate that the instance is available for use.</summary>
-            private static readonly Action s_availableSentinel = () => throw new Exception(nameof(s_availableSentinel));
+            private static readonly Action<object> s_availableSentinel = state => throw new Exception(nameof(s_availableSentinel));
             /// <summary>Event handler for the Completed event.</summary>
             private static readonly EventHandler<SocketAsyncEventArgs> s_completedHandler = (s, e) =>
             {
                 // When the operation completes, see if OnCompleted was already called to hook up a continuation.
                 // If it was, invoke the continuation.
                 AwaitableSocketAsyncEventArgs ea = (AwaitableSocketAsyncEventArgs)e;
-                Action c = ea._continuation;
+                Action<object> c = ea._continuation;
                 if (c != null || (c = Interlocked.CompareExchange(ref ea._continuation, s_completedSentinel, null)) != null)
                 {
                     Debug.Assert(c != s_availableSentinel, "The delegate should not have been the available sentinel.");
                     Debug.Assert(c != s_completedSentinel, "The delegate should not have been the completed sentinel.");
-                    ea.InvokeContinuation(c, forceAsync: false);
+                    object continuationState = ea.UserToken;
+                    ea.UserToken = null;
+                    ea._continuation = s_completedSentinel; // in case someone's polling IsCompleted
+                    ea.InvokeContinuation(c, continuationState, forceAsync: false);
                 }
             };
             /// <summary>
@@ -920,7 +923,7 @@ namespace System.Net.Sockets
             /// Another delegate if OnCompleted was called before the operation could complete, in which case it's the delegate to invoke
             /// when the operation does complete.
             /// </summary>
-            private Action _continuation = s_availableSentinel;
+            private Action<object> _continuation = s_availableSentinel;
             private ExecutionContext _executionContext;
             private object _scheduler;
 
@@ -1001,17 +1004,17 @@ namespace System.Net.Sockets
             /// Rather, it's specifically used as part of the await pattern, and is only usable to determine whether the
             /// operation has completed by the time the instance is awaited.
             /// </remarks>
-            public bool IsCompleted => _continuation != null;
+            public bool IsCompleted => _continuation == s_completedSentinel;
 
             /// <summary>Queues the provided continuation to be executed once the operation has completed.</summary>
-            public void OnCompleted(Action continuation, ValueTaskObjectOnCompletedFlags flags)
+            public void OnCompleted(Action<object> continuation, object state, ValueTaskSourceOnCompletedFlags flags)
             {
-                if ((flags & ValueTaskObjectOnCompletedFlags.FlowExecutionContext) != 0)
+                if ((flags & ValueTaskSourceOnCompletedFlags.FlowExecutionContext) != 0)
                 {
                     _executionContext = ExecutionContext.Capture();
                 }
 
-                if ((flags & ValueTaskObjectOnCompletedFlags.UseSchedulingContext) != 0)
+                if ((flags & ValueTaskSourceOnCompletedFlags.UseSchedulingContext) != 0)
                 {
                     SynchronizationContext sc = SynchronizationContext.Current;
                     if (sc != null && sc.GetType() != typeof(SynchronizationContext))
@@ -1028,31 +1031,33 @@ namespace System.Net.Sockets
                     }
                 }
 
+                UserToken = state; // Use UserToken to carry the continuation state around
                 if (ReferenceEquals(Interlocked.CompareExchange(ref _continuation, continuation, null), s_completedSentinel))
                 {
-                    InvokeContinuation(continuation, forceAsync: true);
+                    UserToken = null;
+                    InvokeContinuation(continuation, state, forceAsync: true);
                 }
             }
 
-            private void InvokeContinuation(Action continuation, bool forceAsync)
+            private void InvokeContinuation(Action<object> continuation, object state, bool forceAsync)
             {
                 ExecutionContext ec = _executionContext;
                 if (ec == null)
                 {
-                    InvokeContinuationCore(continuation, forceAsync);
+                    InvokeContinuationCore(continuation, state, forceAsync);
                 }
                 else
                 {
                     _executionContext = null;
                     ExecutionContext.Run(ec, s =>
                     {
-                        var t = (Tuple<AwaitableSocketAsyncEventArgs, Action, bool>)s;
-                        t.Item1.InvokeContinuationCore(t.Item2, t.Item3);
-                    }, Tuple.Create(this, continuation, forceAsync));
+                        var t = (Tuple<AwaitableSocketAsyncEventArgs, Action<object>, object, bool>)s;
+                        t.Item1.InvokeContinuationCore(t.Item2, t.Item3, t.Item4);
+                    }, Tuple.Create(this, continuation, state, forceAsync));
                 }
             }
 
-            private void InvokeContinuationCore(Action continuation, bool forceAsync)
+            private void InvokeContinuationCore(Action<object> continuation, object state, bool forceAsync)
             {
                 object scheduler = _scheduler;
                 _scheduler = null;
@@ -1061,20 +1066,25 @@ namespace System.Net.Sockets
                 {
                     if (scheduler is SynchronizationContext sc)
                     {
-                        sc.Post(s => ((Action)s)(), continuation);
+                        sc.Post(s =>
+                        {
+                            var t = (Tuple<Action<object>, object>)s;
+                            t.Item1(t.Item2);
+                        }, Tuple.Create(continuation, state));
                     }
                     else
                     {
-                        Task.Factory.StartNew(continuation, CancellationToken.None, TaskCreationOptions.DenyChildAttach, (TaskScheduler)scheduler);
+                        Task.Factory.StartNew(continuation, state, CancellationToken.None, TaskCreationOptions.DenyChildAttach, (TaskScheduler)scheduler);
                     }
                 }
                 else if (forceAsync)
                 {
-                    Task.Run(continuation);
+                    // TODO #27464: Use QueueUserWorkItem when it has a compatible signature.
+                    Task.Factory.StartNew(continuation, state, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
                 }
                 else
                 {
-                    continuation();
+                    continuation(state);
                 }
             }
 
@@ -1098,7 +1108,7 @@ namespace System.Net.Sockets
                 return bytes;
             }
 
-            void IValueTaskObject.GetResult()
+            void IValueTaskSource.GetResult()
             {
                 SocketError error = SocketError;
 

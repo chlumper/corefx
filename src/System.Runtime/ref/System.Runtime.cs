@@ -7998,24 +7998,24 @@ namespace System.Threading.Tasks
         public void SetObserved() { }
     }
     [Flags]
-    public enum ValueTaskObjectOnCompletedFlags
+    public enum ValueTaskSourceOnCompletedFlags
     {
         None,
         UseSchedulingContext = 0x1,
         FlowExecutionContext = 0x2,
     }
-    public interface IValueTaskObject
+    public interface IValueTaskSource
     {
         bool IsCompleted { get; }
         bool IsCompletedSuccessfully { get; }
-        void OnCompleted(Action continuation, ValueTaskObjectOnCompletedFlags flags);
+        void OnCompleted(Action<object> continuation, object state, ValueTaskSourceOnCompletedFlags flags);
         void GetResult();
     }
-    public interface IValueTaskObject<out TResult>
+    public interface IValueTaskSource<out TResult>
     {
         bool IsCompleted { get; }
         bool IsCompletedSuccessfully { get; }
-        void OnCompleted(Action continuation, ValueTaskObjectOnCompletedFlags flags);
+        void OnCompleted(Action<object> continuation, object state, ValueTaskSourceOnCompletedFlags flags);
         TResult GetResult();
     }
     [System.Runtime.CompilerServices.AsyncMethodBuilderAttribute(typeof(System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder))]
@@ -8023,7 +8023,7 @@ namespace System.Threading.Tasks
     {
         internal readonly object _dummy;
         public ValueTask(System.Threading.Tasks.Task task) { throw null; }
-        public ValueTask(System.Threading.Tasks.IValueTaskObject obj) { throw null; }
+        public ValueTask(System.Threading.Tasks.IValueTaskSource source) { throw null; }
         public bool IsCanceled { get { throw null; } }
         public bool IsCompleted { get { throw null; } }
         public bool IsCompletedSuccessfully { get { throw null; } }
@@ -8042,7 +8042,7 @@ namespace System.Threading.Tasks
     {
         internal readonly TResult _result;
         public ValueTask(System.Threading.Tasks.Task<TResult> task) { throw null; }
-        public ValueTask(System.Threading.Tasks.IValueTaskObject<TResult> obj) { throw null; }
+        public ValueTask(System.Threading.Tasks.IValueTaskSource<TResult> source) { throw null; }
         public ValueTask(TResult result) { throw null; }
         public bool IsCanceled { get { throw null; } }
         public bool IsCompleted { get { throw null; } }

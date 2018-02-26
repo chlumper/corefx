@@ -67,7 +67,7 @@ namespace System.Threading.Tasks.Tests
                     break;
 
                 case CtorMode.TaskObject:
-                    var mre = new ManualResetValueTaskObject<int>();
+                    var mre = new ManualResetValueTaskSource<int>();
                     t = new ValueTask<int>(mre);
                     completer = mre;
                     break;
@@ -85,7 +85,7 @@ namespace System.Threading.Tasks.Tests
                     break;
 
                 case CtorMode.TaskObject:
-                    ((ManualResetValueTaskObject<int>)completer).SetResult(42);
+                    ((ManualResetValueTaskSource<int>)completer).SetResult(42);
                     break;
             }
 
@@ -112,7 +112,7 @@ namespace System.Threading.Tasks.Tests
                     break;
 
                 case CtorMode.TaskObject:
-                    var mre = new ManualResetValueTaskObject<int>();
+                    var mre = new ManualResetValueTaskSource<int>();
                     t = new ValueTask<int>(mre);
                     completer = mre;
                     break;
@@ -132,7 +132,7 @@ namespace System.Threading.Tasks.Tests
                     break;
 
                 case CtorMode.TaskObject:
-                    ((ManualResetValueTaskObject<int>)completer).SetException(e);
+                    ((ManualResetValueTaskSource<int>)completer).SetException(e);
                     break;
             }
 
@@ -168,8 +168,8 @@ namespace System.Threading.Tasks.Tests
             AssertExtensions.Throws<ArgumentNullException>("task", () => new ValueTask<int>((Task<int>)null));
             AssertExtensions.Throws<ArgumentNullException>("task", () => new ValueTask<string>((Task<string>)null));
 
-            AssertExtensions.Throws<ArgumentNullException>("task", () => new ValueTask<int>((IValueTaskObject<int>)null));
-            AssertExtensions.Throws<ArgumentNullException>("task", () => new ValueTask<string>((IValueTaskObject<string>)null));
+            AssertExtensions.Throws<ArgumentNullException>("task", () => new ValueTask<int>((IValueTaskSource<int>)null));
+            AssertExtensions.Throws<ArgumentNullException>("task", () => new ValueTask<string>((IValueTaskSource<string>)null));
         }
 
         [Fact]
@@ -233,7 +233,7 @@ namespace System.Threading.Tasks.Tests
         [InlineData(2)]
         public async Task CreateFromTaskObject_Await_Normal(int mode)
         {
-            var mre = new ManualResetValueTaskObject<int>();
+            var mre = new ManualResetValueTaskSource<int>();
             ValueTask<int> t = new ValueTask<int>(mre);
             var ignored = Task.Delay(1).ContinueWith(_ => mre.SetResult(42));
             int actual =
@@ -376,7 +376,7 @@ namespace System.Threading.Tasks.Tests
             }
             else
             {
-                ManualResetValueTaskObject<int> t = CreateCompletedTaskObject(42, null);
+                ManualResetValueTaskSource<int> t = CreateCompletedTaskObject(42, null);
                 vt = new ValueTask<int>(t);
                 obj = t;
             }
@@ -500,9 +500,9 @@ namespace System.Threading.Tasks.Tests
             Assert.Equal(builderTypeCtorArg, amba.BuilderType);
         }
 
-        private static ManualResetValueTaskObject<T> CreateCompletedTaskObject<T>(T result, Exception error)
+        private static ManualResetValueTaskSource<T> CreateCompletedTaskObject<T>(T result, Exception error)
         {
-            var mre = new ManualResetValueTaskObject<T>();
+            var mre = new ManualResetValueTaskSource<T>();
             if (error != null)
             {
                 mre.SetException(error);

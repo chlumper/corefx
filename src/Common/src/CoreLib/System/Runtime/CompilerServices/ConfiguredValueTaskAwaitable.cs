@@ -56,7 +56,7 @@ namespace System.Runtime.CompilerServices
                     }
                     else
                     {
-                        _value.UnsafeValueTaskObject.GetResult();
+                        _value.UnsafeValueTaskSource.GetResult();
                     }
                 }
             }
@@ -70,7 +70,7 @@ namespace System.Runtime.CompilerServices
                 }
                 else if (_value._obj != null)
                 {
-                    _value.UnsafeValueTaskObject.OnCompleted(continuation, continueOnCapturedContext: _value.ContinueOnCapturedContext);
+                    _value.UnsafeValueTaskSource.OnCompleted(continuation, continueOnCapturedContext: _value.ContinueOnCapturedContext);
                 }
                 else
                 {
@@ -87,7 +87,7 @@ namespace System.Runtime.CompilerServices
                 }
                 else if (_value._obj != null)
                 {
-                    _value.UnsafeValueTaskObject.UnsafeOnCompleted(continuation, _value.ContinueOnCapturedContext);
+                    _value.UnsafeValueTaskSource.UnsafeOnCompleted(continuation, _value.ContinueOnCapturedContext);
                 }
                 else
                 {
@@ -153,7 +153,7 @@ namespace System.Runtime.CompilerServices
             public TResult GetResult() =>
                 _value._obj == null ? _value._result :
                 _value.ObjectIsTask ? _value.UnsafeTask.GetAwaiter().GetResult() :
-                _value.UnsafeValueTaskObject.GetResult();
+                _value.UnsafeValueTaskSource.GetResult();
 
             /// <summary>Schedules the continuation action for the <see cref="ConfiguredValueTaskAwaitable{TResult}"/>.</summary>
             public void OnCompleted(Action continuation)
@@ -164,7 +164,7 @@ namespace System.Runtime.CompilerServices
                 }
                 else if (_value._obj != null)
                 {
-                    _value.UnsafeValueTaskObject.OnCompleted(continuation, _value.ContinueOnCapturedContext);
+                    _value.UnsafeValueTaskSource.OnCompleted(continuation, _value.ContinueOnCapturedContext);
                 }
                 else
                 {
@@ -181,7 +181,7 @@ namespace System.Runtime.CompilerServices
                 }
                 else if (_value._obj != null)
                 {
-                    _value.UnsafeValueTaskObject.UnsafeOnCompleted(continuation, _value.ContinueOnCapturedContext);
+                    _value.UnsafeValueTaskSource.UnsafeOnCompleted(continuation, _value.ContinueOnCapturedContext);
                 }
                 else
                 {

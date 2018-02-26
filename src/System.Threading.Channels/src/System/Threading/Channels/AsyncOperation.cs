@@ -8,9 +8,9 @@ using System.Threading.Tasks;
 
 namespace System.Threading.Channels
 {
-    internal abstract class ResettableValueTaskObject
+    internal abstract class ResettableValueTaskSource
     {
-        protected static readonly Action s_completedSentinel = () => Debug.Fail($"{nameof(ResettableValueTaskObject)}.{nameof(s_completedSentinel)} invoked.");
+        protected static readonly Action<object> s_completedSentinel = s => Debug.Fail($"{nameof(ResettableValueTaskSource)}.{nameof(s_completedSentinel)} invoked.");
 
         protected static void ThrowIncompleteOperationException() =>
             throw new InvalidOperationException(SR.InvalidOperation_IncompleteAsyncOperation);
@@ -27,12 +27,13 @@ namespace System.Threading.Channels
         }
     }
 
-    internal abstract class ResettableValueTaskObject<T> : ResettableValueTaskObject, IValueTaskObject<T>, IValueTaskObject
+    internal abstract class ResettableValueTaskSource<T> : ResettableValueTaskSource, IValueTaskSource, IValueTaskSource<T>
     {
         private volatile int _state = (int)States.Owned;
         private T _result;
         private ExceptionDispatchInfo _error;
-        private Action _continuation;
+        private Action<object> _continuation;
+        private object _continuationState;
         private object _schedulingContext;
         private ExecutionContext _executionContext;
 
@@ -57,7 +58,7 @@ namespace System.Threading.Channels
             return result;
         }
 
-        void IValueTaskObject.GetResult()
+        void IValueTaskSource.GetResult()
         {
             if (!IsCompleted)
             {
@@ -76,6 +77,7 @@ namespace System.Threading.Channels
             if (Interlocked.CompareExchange(ref _state, (int)States.Owned, (int)States.Released) == (int)States.Released)
             {
                 _continuation = null;
+                _continuationState = null;
                 _result = default;
                 _error = null;
                 _schedulingContext = null;
@@ -86,16 +88,16 @@ namespace System.Threading.Channels
             return false;
         }
 
-        public void OnCompleted(Action continuation, ValueTaskObjectOnCompletedFlags flags)
+        public void OnCompleted(Action<object> continuation, object state, ValueTaskSourceOnCompletedFlags flags)
         {
-            if ((flags & ValueTaskObjectOnCompletedFlags.FlowExecutionContext) != 0)
+            if ((flags & ValueTaskSourceOnCompletedFlags.FlowExecutionContext) != 0)
             {
                 _executionContext = ExecutionContext.Capture();
             }
 
             SynchronizationContext sc = null;
             TaskScheduler ts = null;
-            if ((flags & ValueTaskObjectOnCompletedFlags.UseSchedulingContext) != 0)
+            if ((flags & ValueTaskSourceOnCompletedFlags.UseSchedulingContext) != 0)
             {
                 sc = SynchronizationContext.Current;
                 if (sc != null && sc.GetType() != typeof(SynchronizationContext))
@@ -112,7 +114,17 @@ namespace System.Threading.Channels
                 }
             }
 
-            Action prevContinuation = Interlocked.CompareExchange(ref _continuation, continuation, null);
+            // We need to store the state before the CompareExchange, so that if it completes immediately
+            // after the CompareExchange, it'll find the state already stored.  If someone misuses this
+            // and schedules multiple continuations erroneously, we could end up using the wrong state.
+            // Make a best-effort attempt to catch such misuse.
+            if (_continuationState != null)
+            {
+                ThrowMultipleContinuations();
+            }
+            _continuationState = state;
+
+            Action<object> prevContinuation = Interlocked.CompareExchange(ref _continuation, continuation, null);
             if (prevContinuation != null)
             {
                 if (prevContinuation != s_completedSentinel)
@@ -123,24 +135,21 @@ namespace System.Threading.Channels
                 Debug.Assert(IsCompleted, $"Expected IsCompleted, got {(States)_state}");
                 if (sc != null)
                 {
-                    sc.Post(s => ((Action)s)(), continuation);
+                    sc.Post(s =>
+                    {
+                        var t = (Tuple<Action<object>, object>)s;
+                        t.Item1(t.Item2);
+                    }, Tuple.Create(continuation, state));
                 }
                 else if (ts != null)
                 {
-                    Task.Factory.StartNew(continuation, CancellationToken.None, TaskCreationOptions.DenyChildAttach, ts);
+                    Task.Factory.StartNew(continuation, state, CancellationToken.None, TaskCreationOptions.DenyChildAttach, ts);
                 }
                 else
                 {
+                    // TODO #27464: Change this to use the new QueueUserWorkItem signature when it's available.
                     Debug.Assert(_schedulingContext == null, $"Expected null context, got {_schedulingContext}");
-                    if (_executionContext != null)
-                    {
-                        _executionContext = null;
-                        ThreadPool.QueueUserWorkItem(s => ((Action)s)(), continuation);
-                    }
-                    else
-                    {
-                        ThreadPool.UnsafeQueueUserWorkItem(s => ((Action)s)(), continuation);
-                    }
+                    Task.Factory.StartNew(continuation, state, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
                 }
             }
         }
@@ -189,7 +198,7 @@ namespace System.Threading.Channels
                 ExecutionContext ec = _executionContext;
                 if (ec != null)
                 {
-                    ExecutionContext.Run(ec, s => ((ResettableValueTaskObject<T>)s).InvokeContinuation(), this);
+                    ExecutionContext.Run(ec, s => ((ResettableValueTaskSource<T>)s).InvokeContinuation(), this);
                 }
                 else
                 {
@@ -200,43 +209,53 @@ namespace System.Threading.Channels
 
         private void InvokeContinuation()
         {
-            object schedulingContext = _schedulingContext;
-            Action continuation = _continuation;
-            Debug.Assert(continuation != s_completedSentinel, $"The continuation was the completion sentinel. State={(States)_state}.");
+            Debug.Assert(_continuation != s_completedSentinel, $"The continuation was the completion sentinel. State={(States)_state}.");
 
-            if (schedulingContext == null)
+            if (_schedulingContext == null)
             {
                 if (RunContinutationsAsynchronously)
                 {
-                    ThreadPool.QueueUserWorkItem(s => ((Action)s)(), continuation);
+                    ThreadPool.QueueUserWorkItem(s =>
+                    {
+                        var vts = (ResettableValueTaskSource<T>)s;
+                        vts._continuation(vts._continuationState);
+                    }, this);
                     return;
                 }
             }
-            else if (schedulingContext is SynchronizationContext sc)
+            else if (_schedulingContext is SynchronizationContext sc)
             {
                 if (RunContinutationsAsynchronously || sc != SynchronizationContext.Current)
                 {
-                    sc.Post(s => ((Action)s)(), continuation);
+                    sc.Post(s =>
+                    {
+                        var vts = (ResettableValueTaskSource<T>)s;
+                        vts._continuation(vts._continuationState);
+                    }, this);
                     return;
                 }
             }
             else
             {
-                TaskScheduler ts = (TaskScheduler)schedulingContext;
+                TaskScheduler ts = (TaskScheduler)_schedulingContext;
                 if (RunContinutationsAsynchronously || ts != TaskScheduler.Current)
                 {
-                    Task.Factory.StartNew(continuation, CancellationToken.None, TaskCreationOptions.DenyChildAttach, ts);
+                    Task.Factory.StartNew(s =>
+                    {
+                        var vts = (ResettableValueTaskSource<T>)s;
+                        vts._continuation(vts._continuationState);
+                    }, this, CancellationToken.None, TaskCreationOptions.DenyChildAttach, ts);
                     return;
                 }
             }
 
-            continuation();
+            _continuation(_continuationState);
         }
     }
 
     /// <summary>The representation of an asynchronous operation that has a result value.</summary>
     /// <typeparam name="TResult">Specifies the type of the result.  May be <see cref="VoidResult"/>.</typeparam>
-    internal class AsyncOperation<TResult> : ResettableValueTaskObject<TResult>
+    internal class AsyncOperation<TResult> : ResettableValueTaskSource<TResult>
     {
         /// <summary>Registration in <see cref="CancellationToken"/> that should be disposed of when the operation has completed.</summary>
         private CancellationTokenRegistration _registration;

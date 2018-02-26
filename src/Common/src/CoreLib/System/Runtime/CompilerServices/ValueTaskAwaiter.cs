@@ -38,7 +38,7 @@ namespace System.Runtime.CompilerServices
                 }
                 else
                 {
-                    _value.UnsafeValueTaskObject.GetResult();
+                    _value.UnsafeValueTaskSource.GetResult();
                 }
             }
         }
@@ -52,7 +52,7 @@ namespace System.Runtime.CompilerServices
             }
             else if (_value._obj != null)
             {
-                _value.UnsafeValueTaskObject.OnCompleted(continuation, continueOnCapturedContext: true);
+                _value.UnsafeValueTaskSource.OnCompleted(continuation, continueOnCapturedContext: true);
             }
             else
             {
@@ -69,7 +69,7 @@ namespace System.Runtime.CompilerServices
             }
             else if (_value._obj != null)
             {
-                _value.UnsafeValueTaskObject.UnsafeOnCompleted(continuation, continueOnCapturedContext: true);
+                _value.UnsafeValueTaskSource.UnsafeOnCompleted(continuation, continueOnCapturedContext: true);
             }
             else
             {
@@ -109,7 +109,7 @@ namespace System.Runtime.CompilerServices
         public TResult GetResult() =>
             _value._obj == null ? _value._result :
             _value.ObjectIsTask ? _value.UnsafeTask.GetAwaiter().GetResult() :
-            _value.UnsafeValueTaskObject.GetResult();
+            _value.UnsafeValueTaskSource.GetResult();
 
         /// <summary>Schedules the continuation action for this ValueTask.</summary>
         public void OnCompleted(Action continuation)
@@ -120,7 +120,7 @@ namespace System.Runtime.CompilerServices
             }
             else if (_value._obj != null)
             {
-                _value.UnsafeValueTaskObject.OnCompleted(continuation, continueOnCapturedContext: true);
+                _value.UnsafeValueTaskSource.OnCompleted(continuation, continueOnCapturedContext: true);
             }
             else
             {
@@ -137,7 +137,7 @@ namespace System.Runtime.CompilerServices
             }
             else if (_value._obj != null)
             {
-                _value.UnsafeValueTaskObject.UnsafeOnCompleted(continuation, continueOnCapturedContext: true);
+                _value.UnsafeValueTaskSource.UnsafeOnCompleted(continuation, continueOnCapturedContext: true);
             }
             else
             {

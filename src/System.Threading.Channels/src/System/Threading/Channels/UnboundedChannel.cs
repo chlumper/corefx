@@ -48,8 +48,8 @@ namespace System.Threading.Channels
             internal UnboundedChannelReader(UnboundedChannel<T> parent)
             {
                 _parent = parent;
-                _readerSingleton = new AsyncOperation<T>(parent._runContinuationsAsynchronously) { UnsafeState = ResettableValueTaskObject.States.Released };
-                _waiterSingleton = new AsyncOperation<bool>(parent._runContinuationsAsynchronously) { UnsafeState = ResettableValueTaskObject.States.Released };
+                _readerSingleton = new AsyncOperation<T>(parent._runContinuationsAsynchronously) { UnsafeState = ResettableValueTaskSource.States.Released };
+                _waiterSingleton = new AsyncOperation<bool>(parent._runContinuationsAsynchronously) { UnsafeState = ResettableValueTaskSource.States.Released };
             }
 
             public override Task Completion => _parent._completion.Task;
