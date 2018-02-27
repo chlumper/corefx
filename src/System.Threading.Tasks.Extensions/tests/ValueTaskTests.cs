@@ -364,6 +364,106 @@ namespace System.Threading.Tasks.Tests
         }
 
         [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task NonGeneric_CreateFromValueTaskSource_Success(bool sync)
+        {
+            ValueTask vt = new ValueTask(sync ? ManualResetValueTaskSource.Completed(0) : ManualResetValueTaskSource.Delay(1, 0));
+            Task t = vt.AsTask();
+            if (sync)
+            {
+                Assert.True(t.Status == TaskStatus.RanToCompletion);
+            }
+            await t;
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Generic_CreateFromValueTaskSource_Success(bool sync)
+        {
+            ValueTask<int> vt = new ValueTask<int>(sync ? ManualResetValueTaskSource.Completed(42) : ManualResetValueTaskSource.Delay(1, 42));
+            Task<int> t = vt.AsTask();
+            if (sync)
+            {
+                Assert.True(t.Status == TaskStatus.RanToCompletion);
+            }
+            Assert.Equal(42, await t);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task NonGeneric_CreateFromValueTaskSource_Faulted(bool sync)
+        {
+            ValueTask vt = new ValueTask(sync ? ManualResetValueTaskSource.Completed(0, new FormatException()) : ManualResetValueTaskSource.Delay(1, 0, new FormatException()));
+            Task t = vt.AsTask();
+            if (sync)
+            {
+                Assert.True(t.IsFaulted);
+                Assert.IsType<FormatException>(t.Exception.InnerException);
+            }
+            else
+            {
+                await Assert.ThrowsAsync<FormatException>(() => t);
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Generic_CreateFromValueTaskSource_Faulted(bool sync)
+        {
+            ValueTask<int> vt = new ValueTask<int>(sync ? ManualResetValueTaskSource.Completed(0, new FormatException()) : ManualResetValueTaskSource.Delay(1, 0, new FormatException()));
+            Task<int> t = vt.AsTask();
+            if (sync)
+            {
+                Assert.True(t.IsFaulted);
+                Assert.IsType<FormatException>(t.Exception.InnerException);
+            }
+            else
+            {
+                await Assert.ThrowsAsync<FormatException>(() => t);
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task NonGeneric_CreateFromValueTaskSource_Canceled(bool sync)
+        {
+            ValueTask vt = new ValueTask(sync ? ManualResetValueTaskSource.Completed(0, new OperationCanceledException()) : ManualResetValueTaskSource.Delay(1, 0, new OperationCanceledException()));
+            Task t = vt.AsTask();
+            if (sync)
+            {
+                Assert.True(t.IsCanceled);
+            }
+            else
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => t);
+                Assert.True(t.IsCanceled);
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Generic_CreateFromValueTaskSource_Canceled(bool sync)
+        {
+            ValueTask<int> vt = new ValueTask<int>(sync ? ManualResetValueTaskSource.Completed(0, new OperationCanceledException()) : ManualResetValueTaskSource.Delay(1, 0, new OperationCanceledException()));
+            Task<int> t = vt.AsTask();
+            if (sync)
+            {
+                Assert.True(t.IsCanceled);
+            }
+            else
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => t);
+                Assert.True(t.IsCanceled);
+            }
+        }
+
+        [Theory]
         [InlineData(CtorMode.Result)]
         [InlineData(CtorMode.Task)]
         [InlineData(CtorMode.ValueTaskSource)]
@@ -475,10 +575,6 @@ namespace System.Threading.Tasks.Tests
         [InlineData(CtorMode.ValueTaskSource)]
         public async Task NonGeneric_Awaiter_OnCompleted(CtorMode mode)
         {
-            // Since ValueTask implements both OnCompleted and UnsafeOnCompleted,
-            // OnCompleted typically won't be used by await, so we add an explicit test
-            // for it here.
-
             ValueTask t =
                 mode == CtorMode.Result ? new ValueTask() :
                 mode == CtorMode.Task ? new ValueTask(Task.CompletedTask) :
@@ -493,12 +589,24 @@ namespace System.Threading.Tasks.Tests
         [InlineData(CtorMode.Result)]
         [InlineData(CtorMode.Task)]
         [InlineData(CtorMode.ValueTaskSource)]
+        public async Task NonGeneric_Awaiter_UnsafeOnCompleted(CtorMode mode)
+        {
+            ValueTask t =
+                mode == CtorMode.Result ? new ValueTask() :
+                mode == CtorMode.Task ? new ValueTask(Task.CompletedTask) :
+                new ValueTask(ManualResetValueTaskSource.Completed(0, null));
+
+            var tcs = new TaskCompletionSource<bool>();
+            t.GetAwaiter().UnsafeOnCompleted(() => tcs.SetResult(true));
+            await tcs.Task;
+        }
+
+        [Theory]
+        [InlineData(CtorMode.Result)]
+        [InlineData(CtorMode.Task)]
+        [InlineData(CtorMode.ValueTaskSource)]
         public async Task Generic_Awaiter_OnCompleted(CtorMode mode)
         {
-            // Since ValueTask implements both OnCompleted and UnsafeOnCompleted,
-            // OnCompleted typically won't be used by await, so we add an explicit test
-            // for it here.
-
             ValueTask<int> t =
                 mode == CtorMode.Result ? new ValueTask<int>(42) :
                 mode == CtorMode.Task ? new ValueTask<int>(Task.FromResult(42)) :
@@ -506,6 +614,22 @@ namespace System.Threading.Tasks.Tests
 
             var tcs = new TaskCompletionSource<bool>();
             t.GetAwaiter().OnCompleted(() => tcs.SetResult(true));
+            await tcs.Task;
+        }
+
+        [Theory]
+        [InlineData(CtorMode.Result)]
+        [InlineData(CtorMode.Task)]
+        [InlineData(CtorMode.ValueTaskSource)]
+        public async Task Generic_Awaiter_UnsafeOnCompleted(CtorMode mode)
+        {
+            ValueTask<int> t =
+                mode == CtorMode.Result ? new ValueTask<int>(42) :
+                mode == CtorMode.Task ? new ValueTask<int>(Task.FromResult(42)) :
+                new ValueTask<int>(ManualResetValueTaskSource.Completed(42, null));
+
+            var tcs = new TaskCompletionSource<bool>();
+            t.GetAwaiter().UnsafeOnCompleted(() => tcs.SetResult(true));
             await tcs.Task;
         }
 
@@ -518,10 +642,6 @@ namespace System.Threading.Tasks.Tests
         [InlineData(CtorMode.ValueTaskSource, false)]
         public async Task NonGeneric_ConfiguredAwaiter_OnCompleted(CtorMode mode, bool continueOnCapturedContext)
         {
-            // Since ValueTask implements both OnCompleted and UnsafeOnCompleted,
-            // OnCompleted typically won't be used by await, so we add an explicit test
-            // for it here.
-
             ValueTask t =
                 mode == CtorMode.Result ? new ValueTask() :
                 mode == CtorMode.Task ? new ValueTask(Task.CompletedTask) :
@@ -539,12 +659,27 @@ namespace System.Threading.Tasks.Tests
         [InlineData(CtorMode.Result, false)]
         [InlineData(CtorMode.Task, false)]
         [InlineData(CtorMode.ValueTaskSource, false)]
+        public async Task NonGeneric_ConfiguredAwaiter_UnsafeOnCompleted(CtorMode mode, bool continueOnCapturedContext)
+        {
+            ValueTask t =
+                mode == CtorMode.Result ? new ValueTask() :
+                mode == CtorMode.Task ? new ValueTask(Task.CompletedTask) :
+                new ValueTask(ManualResetValueTaskSource.Completed(0, null));
+
+            var tcs = new TaskCompletionSource<bool>();
+            t.ConfigureAwait(continueOnCapturedContext).GetAwaiter().UnsafeOnCompleted(() => tcs.SetResult(true));
+            await tcs.Task;
+        }
+
+        [Theory]
+        [InlineData(CtorMode.Result, true)]
+        [InlineData(CtorMode.Task, true)]
+        [InlineData(CtorMode.ValueTaskSource, true)]
+        [InlineData(CtorMode.Result, false)]
+        [InlineData(CtorMode.Task, false)]
+        [InlineData(CtorMode.ValueTaskSource, false)]
         public async Task Generic_ConfiguredAwaiter_OnCompleted(CtorMode mode, bool continueOnCapturedContext)
         {
-            // Since ValueTask implements both OnCompleted and UnsafeOnCompleted,
-            // OnCompleted typically won't be used by await, so we add an explicit test
-            // for it here.
-
             ValueTask<int> t =
                 mode == CtorMode.Result ? new ValueTask<int>(42) :
                 mode == CtorMode.Task ? new ValueTask<int>(Task.FromResult(42)) :
@@ -552,6 +687,25 @@ namespace System.Threading.Tasks.Tests
 
             var tcs = new TaskCompletionSource<bool>();
             t.ConfigureAwait(continueOnCapturedContext).GetAwaiter().OnCompleted(() => tcs.SetResult(true));
+            await tcs.Task;
+        }
+
+        [Theory]
+        [InlineData(CtorMode.Result, true)]
+        [InlineData(CtorMode.Task, true)]
+        [InlineData(CtorMode.ValueTaskSource, true)]
+        [InlineData(CtorMode.Result, false)]
+        [InlineData(CtorMode.Task, false)]
+        [InlineData(CtorMode.ValueTaskSource, false)]
+        public async Task Generic_ConfiguredAwaiter_UnsafeOnCompleted(CtorMode mode, bool continueOnCapturedContext)
+        {
+            ValueTask<int> t =
+                mode == CtorMode.Result ? new ValueTask<int>(42) :
+                mode == CtorMode.Task ? new ValueTask<int>(Task.FromResult(42)) :
+                new ValueTask<int>(ManualResetValueTaskSource.Completed(42, null));
+
+            var tcs = new TaskCompletionSource<bool>();
+            t.ConfigureAwait(continueOnCapturedContext).GetAwaiter().UnsafeOnCompleted(() => tcs.SetResult(true));
             await tcs.Task;
         }
 

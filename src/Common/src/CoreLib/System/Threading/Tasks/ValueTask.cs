@@ -50,16 +50,16 @@ namespace System.Threading.Tasks
         }
 
         /// <summary>Initialize the <see cref="ValueTask"/> with a <see cref="IValueTaskSource"/> object that represents the operation.</summary>
-        /// <param name="obj">The object.</param>
+        /// <param name="source">The source.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public ValueTask(IValueTaskSource obj)
+        public ValueTask(IValueTaskSource source)
         {
-            if (obj == null)
+            if (source == null)
             {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.task);
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            _obj = obj;
+            _obj = source;
             _flags = 0;
         }
 
@@ -167,17 +167,32 @@ namespace System.Threading.Tasks
                 }
                 catch (Exception exc)
                 {
+                    if (exc is OperationCanceledException oce)
+                    {
 #if netstandard
-                    var tcs = new TaskCompletionSource<bool>();
-                    tcs.TrySetException(exc);
-                    return tcs.Task;
+                        var tcs = new TaskCompletionSource<bool>();
+                        tcs.TrySetCanceled();
+                        return tcs.Task;
 #else
-                    return Task.FromException(exc);
+                        var tcs = new Task<VoidTaskResult>();
+                        tcs.TrySetCanceled(oce.CancellationToken, oce);
+                        return tcs;
 #endif
+                    }
+                    else
+                    {
+#if netstandard
+                        var tcs = new TaskCompletionSource<bool>();
+                        tcs.TrySetException(exc);
+                        return tcs.Task;
+#else
+                        return Task.FromException(exc);
+#endif
+                    }
                 }
             }
 
-            var m = new ValueTaskSourceMarshaler(t);
+            var m = new ValueTaskSourceTask(t);
             return
 #if netstandard
                 m.Task;
@@ -187,32 +202,44 @@ namespace System.Threading.Tasks
         }
 
         /// <summary>Type used to create a <see cref="Task"/> to represent a <see cref="IValueTaskSource"/>.</summary>
-        private sealed class ValueTaskSourceMarshaler :
+        private sealed class ValueTaskSourceTask :
 #if netstandard
             TaskCompletionSource<bool>
 #else
             Task<VoidTaskResult>
 #endif
         {
-            private readonly IValueTaskSource _task;
-
-            public ValueTaskSourceMarshaler(IValueTaskSource task)
+            private static readonly Action<object> s_completionAction = state =>
             {
-                _task = task;
-                task.UnsafeOnCompleted(new Action(HasCompleted), continueOnCapturedContext: false);
-            }
-
-            private void HasCompleted()
-            {
+                var vtst = (ValueTaskSourceTask)state;
                 try
                 {
-                    _task.GetResult();
-                    TrySetResult(default);
+                    vtst._source.GetResult();
+                    vtst.TrySetResult(default);
                 }
                 catch (Exception exc)
                 {
-                    TrySetException(exc);
+                    if (exc is OperationCanceledException oce)
+                    {
+#if netstandard
+                        vtst.TrySetCanceled();
+#else
+                        vtst.TrySetCanceled(oce.CancellationToken, oce);
+#endif
+                    }
+                    else
+                    {
+                        vtst.TrySetException(exc);
+                    }
                 }
+            };
+
+            private readonly IValueTaskSource _source;
+
+            public ValueTaskSourceTask(IValueTaskSource source)
+            {
+                _source = source;
+                source.OnCompleted(s_completionAction, this, ValueTaskSourceOnCompletedFlags.None);
             }
         }
 
@@ -303,7 +330,7 @@ namespace System.Threading.Tasks
         // An instance created with the default ctor (a zero init'd struct) represents a synchronously, successfully completed operation
         // with a result of default(TResult).
 
-        /// <summary>Initialize the <see cref="ValueTask{TResult}"/> with a <see cref="TResult"/> result value.</summary>
+        /// <summary>Initialize the <see cref="ValueTask{TResult}"/> with a <typeparamref name="TResult"/> result value.</summary>
         /// <param name="result">The result.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ValueTask(TResult result)
@@ -329,16 +356,16 @@ namespace System.Threading.Tasks
         }
 
         /// <summary>Initialize the <see cref="ValueTask{TResult}"/> with a <see cref="IValueTaskSource{TResult}"/> object that represents the operation.</summary>
-        /// <param name="obj">The object.</param>
+        /// <param name="source">The source.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public ValueTask(IValueTaskSource<TResult> obj)
+        public ValueTask(IValueTaskSource<TResult> source)
         {
-            if (obj == null)
+            if (source == null)
             {
-                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.task);
+                ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            _obj = obj;
+            _obj = source;
             _result = default;
             _flags = 0;
         }
@@ -381,7 +408,7 @@ namespace System.Threading.Tasks
             }
         }
 
-        /// <summary>Returns the <see cref="IValueTaskSource<typeparamref name="TResult"/>>"/> stored in <see cref="_obj"/>.  This uses <see cref="Unsafe"/>.</summary>
+        /// <summary>Returns the <see cref="IValueTaskSource{TResult}"/> stored in <see cref="_obj"/>.  This uses <see cref="Unsafe"/>.</summary>
         internal IValueTaskSource<TResult> UnsafeValueTaskSource
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -447,24 +474,39 @@ namespace System.Threading.Tasks
                     // If any exception occurred, propagate it.
                     return
 #if netstandard
-                        Task.FromResult(t.GetResult()) :
+                        Task.FromResult(t.GetResult());
 #else
                         AsyncTaskMethodBuilder<TResult>.GetTaskForResult(t.GetResult());
 #endif
                 }
                 catch (Exception exc)
                 {
+                    if (exc is OperationCanceledException oce)
+                    {
 #if netstandard
-                    var tcs = new TaskCompletionSource<TResult>();
-                    tcs.TrySetException(exc);
-                    return tcs.Task;
+                        var tcs = new TaskCompletionSource<TResult>();
+                        tcs.TrySetCanceled();
+                        return tcs.Task;
 #else
-                    return Task.FromException<TResult>(exc);
+                        var tcs = new Task<TResult>();
+                        tcs.TrySetCanceled(oce.CancellationToken, oce);
+                        return tcs;
 #endif
+                    }
+                    else
+                    {
+#if netstandard
+                        var tcs = new TaskCompletionSource<TResult>();
+                        tcs.TrySetException(exc);
+                        return tcs.Task;
+#else
+                        return Task.FromException<TResult>(exc);
+#endif
+                    }
                 }
             }
 
-            var m = new ValueTaskSourceMarshaler(t);
+            var m = new ValueTaskSourceTask(t);
             return
 #if netstandard
                 m.Task;
@@ -474,31 +516,43 @@ namespace System.Threading.Tasks
         }
 
         /// <summary>Type used to create a <see cref="Task{TResult}"/> to represent a <see cref="IValueTaskSource{TResult}"/>.</summary>
-        private sealed class ValueTaskSourceMarshaler :
+        private sealed class ValueTaskSourceTask :
 #if netstandard
             TaskCompletionSource<TResult>
 #else
             Task<TResult>
 #endif
         {
-            private readonly IValueTaskSource<TResult> _obj;
-
-            public ValueTaskSourceMarshaler(IValueTaskSource<TResult> task)
+            private static readonly Action<object> s_completionAction = state =>
             {
-                _obj = task;
-                task.UnsafeOnCompleted(new Action(HasCompleted), continueOnCapturedContext: false);
-            }
-
-            private void HasCompleted()
-            {
+                var vtst = (ValueTaskSourceTask)state;
                 try
                 {
-                    TrySetResult(_obj.GetResult());
+                    vtst.TrySetResult(vtst._source.GetResult());
                 }
                 catch (Exception exc)
                 {
-                    TrySetException(exc);
+                    if (exc is OperationCanceledException oce)
+                    {
+#if netstandard
+                        vtst.TrySetCanceled();
+#else
+                        vtst.TrySetCanceled(oce.CancellationToken, oce);
+#endif
+                    }
+                    else
+                    {
+                        vtst.TrySetException(exc);
+                    }
                 }
+            };
+
+            private readonly IValueTaskSource<TResult> _source;
+
+            public ValueTaskSourceTask(IValueTaskSource<TResult> source)
+            {
+                _source = source;
+                source.OnCompleted(s_completionAction, this, ValueTaskSourceOnCompletedFlags.None);
             }
         }
 
@@ -548,7 +602,8 @@ namespace System.Threading.Tasks
         /// <remarks>
         /// If the <see cref="ValueTask{TResult}"/> is backed by a result or by a <see cref="IValueTaskSource{TResult}"/>,
         /// this will always return false.  If it's backed by a <see cref="Task"/>, it'll return the
-        /// value of the task's <see cref="Task{TResult}.IsCanceled"/> property.
+        /// value of the task's <see cref="Task.IsCanceled"/> property.
+        /// </remarks>
         public bool IsCanceled => ObjectIsTask && UnsafeTask.IsCanceled;
 
         /// <summary>Gets the result.</summary>

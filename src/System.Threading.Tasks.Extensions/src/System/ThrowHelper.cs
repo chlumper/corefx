@@ -27,6 +27,7 @@ namespace System
 
     internal enum ExceptionArgument
     {
-        task
+        task,
+        source
     }
 }
