@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Test.Common;
 using System.Text;
 using System.Threading.Tasks;
@@ -235,6 +236,71 @@ namespace System.Net.Http.Functional.Tests
                     Assert.Contains(headers, header => header.Contains("Authorization"));
                 }
             });
+        }
+
+        public static IEnumerable<object[]> NonAuthorizationHttpStatusCodes =>
+            from statusCode in (HttpStatusCode[])Enum.GetValues(typeof(HttpStatusCode))
+            where statusCode != HttpStatusCode.Unauthorized && statusCode != HttpStatusCode.ProxyAuthenticationRequired
+            select new object[] { statusCode };
+
+        [Fact]
+       // [MemberData(nameof(NonAuthorizationHttpStatusCodes))]
+        public async Task PreAuthenticate_FirstRequestNoHeader_SecondRequestVariousStatusCodes_ThirdRequestPreauthenticates() //HttpStatusCode statusCode)
+        {
+            const string AuthResponse = "WWW-Authenticate: Basic realm=\"hello\"\r\n";
+
+            var success = new List<HttpStatusCode>();
+            var failed = new List<HttpStatusCode>();
+            foreach (HttpStatusCode statusCode in Enumerable.Range(100, 500).Select(c => (HttpStatusCode)c).ToArray())
+            {
+                try
+                {
+                    await LoopbackServer.CreateClientAndServerAsync(async uri =>
+                    {
+                        using (HttpClientHandler handler = CreateHttpClientHandler())
+                        using (var client = new HttpClient(handler))
+                        {
+                            client.DefaultRequestHeaders.ConnectionClose = true; // for simplicity of not needing to know every handler's pooling policy
+                            handler.PreAuthenticate = true;
+                            handler.Credentials = s_credentials;
+                            client.DefaultRequestHeaders.ExpectContinue = false;
+
+                            using (HttpResponseMessage resp = await client.GetAsync(uri))
+                            {
+                                Assert.Equal(statusCode, resp.StatusCode);
+                            }
+                            Assert.Equal("hello world 2", await client.GetStringAsync(uri));
+                        }
+                    },
+                    async server =>
+                    {
+                        List<string> headers = await server.AcceptConnectionSendResponseAndCloseAsync(HttpStatusCode.Unauthorized, AuthResponse);
+                        Assert.All(headers, header => Assert.DoesNotContain("Authorization", header));
+
+                        headers = await server.AcceptConnectionSendResponseAndCloseAsync(statusCode, content: "hello world 1");
+                        Assert.Contains(headers, header => header.Contains("Authorization"));
+
+                        headers = await server.AcceptConnectionSendResponseAndCloseAsync(HttpStatusCode.OK, content: "hello world 2");
+                        Assert.Contains(headers, header => header.Contains("Authorization"));
+                    });
+                    success.Add(statusCode);
+                }
+                catch
+                {
+                    failed.Add(statusCode);
+                }
+            }
+
+            //Console.WriteLine();
+            //Console.WriteLine(Enum.GetValues(typeof(HttpStatusCode)).Length);
+            //Console.WriteLine("---- Success: -----");
+            //foreach (var code in success) Console.WriteLine(code + " (" + (int)code + ")");
+            Console.WriteLine("Success: " + success.Count);
+            Console.WriteLine("---- Failed: -----");
+            foreach (var code in failed)
+                Console.WriteLine(code + " (" + (int)code + ")");
+            Console.WriteLine();
+
         }
 
         [Fact]
